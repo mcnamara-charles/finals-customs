@@ -1,0 +1,304 @@
+{
+  "maps": [
+    {
+      "name": "bernal",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "fangwai_city",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "fortune_stadium",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "kyoto",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "las_vegas",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "las_vegas_stadium",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "monaco",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "nozomi_citadel",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "peace_center",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "seoul",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "skyway_stadium",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "syshorizon",
+      "imageFile": "",
+      "prob": "auto"
+    }
+  ],
+  "map_modifiers": {
+    "bernal__standard": {
+      "map": "bernal",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night",
+        "foggy day"
+      ],
+      "prob": "auto"
+    },
+    "bernal__suspended_sponsor_structures": {
+      "map": "bernal",
+      "modifier": "suspended sponsor structures",
+      "weather": [
+        "sunny",
+        "clear night",
+        "foggy day"
+      ],
+      "prob": "auto"
+    },
+    "fangwai_city__standard": {
+      "map": "fangwai_city",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night"
+      ],
+      "prob": "auto"
+    },
+    "fortune_stadium__standard": {
+      "map": "fortune_stadium",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night"
+      ],
+      "prob": "auto"
+    },
+    "kyoto__standard": {
+      "map": "kyoto",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night",
+        "sunset",
+        "fog"
+      ],
+      "prob": "auto"
+    },
+    "kyoto__suspended_structures": {
+      "map": "kyoto",
+      "modifier": "suspended structures",
+      "weather": [
+        "sunny",
+        "clear night",
+        "sunset",
+        "fog"
+      ],
+      "prob": "auto"
+    },
+    "kyoto__moving_platforms": {
+      "map": "kyoto",
+      "modifier": "moving platforms",
+      "weather": [
+        "sunny",
+        "clear night",
+        "sunset",
+        "fog"
+      ],
+      "prob": "auto"
+    },
+    "las_vegas__standard": {
+      "map": "las_vegas",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night",
+        "sunset",
+        "stormy day"
+      ],
+      "prob": "auto"
+    },
+    "las_vegas__sandstorm": {
+      "map": "las_vegas",
+      "modifier": "sandstorm",
+      "weather": [
+        "foggy day"
+      ],
+      "prob": "auto"
+    },
+    "las_vegas_stadium__standard": {
+      "map": "las_vegas_stadium",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night",
+        "sunset",
+        "stormy day"
+      ],
+      "prob": "auto"
+    },
+    "las_vegas_stadium__sandstorm": {
+      "map": "las_vegas_stadium",
+      "modifier": "sandstorm",
+      "weather": [
+        "foggy day"
+      ],
+      "prob": "auto"
+    },
+    "monaco__standard": {
+      "map": "monaco",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "fog",
+        "clear night",
+        "dusk",
+        "storm"
+      ],
+      "prob": "auto"
+    },
+    "monaco__duck_and_cover": {
+      "map": "monaco",
+      "modifier": "duck and cover",
+      "weather": [
+        "sunny",
+        "fog",
+        "clear night",
+        "dusk"
+      ],
+      "prob": "auto"
+    },
+    "monaco__suspended_structures": {
+      "map": "monaco",
+      "modifier": "suspended structures",
+      "weather": [
+        "sunny",
+        "fog",
+        "clear night",
+        "dusk"
+      ],
+      "prob": "auto"
+    },
+    "nozomi_citadel__standard": {
+      "map": "nozomi_citadel",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night"
+      ],
+      "prob": "auto"
+    },
+    "peace_center__standard": {
+      "map": "peace_center",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night"
+      ],
+      "prob": "auto"
+    },
+    "seoul__standard": {
+      "map": "seoul",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "stormy day",
+        "fog",
+        "clear night"
+      ],
+      "prob": "auto"
+    },
+    "seoul__moving_platforms": {
+      "map": "seoul",
+      "modifier": "moving platforms",
+      "weather": [
+        "sunny",
+        "stormy day",
+        "fog",
+        "clear night"
+      ],
+      "prob": "auto"
+    },
+    "seoul__under_construction": {
+      "map": "seoul",
+      "modifier": "under construction",
+      "weather": [
+        "sunny",
+        "stormy day",
+        "fog",
+        "clear night"
+      ],
+      "prob": "auto"
+    },
+    "skyway_stadium__standard": {
+      "map": "skyway_stadium",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "fog",
+        "clear night",
+        "evening"
+      ],
+      "prob": "auto"
+    },
+    "skyway_stadium__high_rise": {
+      "map": "skyway_stadium",
+      "modifier": "high rise",
+      "weather": [
+        "sunny",
+        "fog",
+        "clear night",
+        "evening"
+      ],
+      "prob": "auto"
+    },
+    "skyway_stadium__up_down_left_right": {
+      "map": "skyway_stadium",
+      "modifier": "up down left right",
+      "weather": [
+        "sunny",
+        "fog",
+        "clear night",
+        "evening"
+      ],
+      "prob": "auto"
+    },
+    "syshorizon__standard": {
+      "map": "syshorizon",
+      "modifier": "standard",
+      "weather": [
+        "sunny",
+        "clear night",
+        "sunset",
+        "foggy night"
+      ],
+      "prob": "auto"
+    }
+  }
+}

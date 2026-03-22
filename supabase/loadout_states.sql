@@ -1,0 +1,2 @@
+-- Canonical schema: supabase/migrations/20250322100000_loadout_states.sql
+-- Apply via Supabase migrations (`supabase db push` / linked project), not by running this file.

@@ -1,0 +1,721 @@
+{
+  "teams": [
+    {
+      "name": "The Boundless",
+      "imageFile": "/assets/teams/the_boundless.png"
+    },
+    {
+      "name": "The Live Wires",
+      "imageFile": "/assets/teams/the_live_wires.png"
+    },
+    {
+      "name": "The Big Splash",
+      "imageFile": "/assets/teams/the_big_splash.png"
+    },
+    {
+      "name": "The Kingfish",
+      "imageFile": "/assets/teams/the_kingfish.png"
+    }
+  ],
+  "class_images": {
+    "light": "/assets/builds/light.png",
+    "medium": "/assets/builds/medium.png",
+    "heavy": "/assets/builds/heavy.png"
+  },
+  "classes": {
+    "light": {
+      "weapons": [
+        {
+          "name": "93R",
+          "imageFile": "/assets/light_weapons/93R.png",
+          "prob": "auto"
+        },
+        {
+          "name": "ARN-220",
+          "imageFile": "/assets/light_weapons/ARN-220.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Dagger",
+          "imageFile": "/assets/light_weapons/dagger.png",
+          "prob": "auto"
+        },
+        {
+          "name": "LH1",
+          "imageFile": "/assets/light_weapons/LH1.png",
+          "prob": "auto"
+        },
+        {
+          "name": "M11",
+          "imageFile": "/assets/light_weapons/M11.png",
+          "prob": "auto"
+        },
+        {
+          "name": "M26 Matter",
+          "imageFile": "/assets/light_weapons/matter.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Recurve Bow",
+          "imageFile": "/assets/light_weapons/bow.png",
+          "prob": "auto"
+        },
+        {
+          "name": "SH1900",
+          "imageFile": "/assets/light_weapons/sh1900.png",
+          "prob": "auto"
+        },
+        {
+          "name": "SR-84",
+          "imageFile": "/assets/light_weapons/sr-84.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Sword",
+          "imageFile": "/assets/light_weapons/sword.png",
+          "prob": "auto"
+        },
+        {
+          "name": "V9S",
+          "imageFile": "/assets/light_weapons/v9s.png",
+          "prob": "auto"
+        },
+        {
+          "name": "XP-54",
+          "imageFile": "/assets/light_weapons/xp54.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Throwing Knives",
+          "imageFile": "/assets/light_weapons/throwing_knives.png",
+          "prob": "auto"
+        }
+      ],
+      "gadgets": [
+        {
+          "name": "Breach Charge",
+          "imageFile": "/assets/gadgets/breach_charge.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Flashbang",
+          "imageFile": "/assets/gadgets/flashbang.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Frag Grenade",
+          "imageFile": "/assets/gadgets/frag.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Gas Grenade",
+          "imageFile": "/assets/gadgets/gas_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Gateway",
+          "imageFile": "/assets/gadgets/gateway.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Glitch Grenade",
+          "imageFile": "/assets/gadgets/glitch_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Goo Grenade",
+          "imageFile": "/assets/gadgets/goo_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Gravity Vortex",
+          "imageFile": "/assets/gadgets/gravity_vortex.png",
+          "prob": "auto"
+        },
+        {
+          "name": "H+ Infuser",
+          "imageFile": "/assets/gadgets/hplus.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Nullifier",
+          "imageFile": "/assets/gadgets/nullifier.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Pyro Grenade",
+          "imageFile": "/assets/gadgets/pyro_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Smoke Grenade",
+          "imageFile": "/assets/gadgets/smoke_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Sonar Grenade",
+          "imageFile": "/assets/gadgets/sonar_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Thermal Bore",
+          "imageFile": "/assets/gadgets/thermal_bore.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Tracking Dart",
+          "imageFile": "/assets/gadgets/tracking_dart.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Vanishing Bomb",
+          "imageFile": "/assets/gadgets/vanishing_bomb.png",
+          "prob": "auto"
+        }
+      ],
+      "specializations": [
+        {
+          "name": "Cloaking Device",
+          "imageFile": "/assets/specs/cloaking_device.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Evasive Dash",
+          "imageFile": "/assets/specs/evasive_dash.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Grappling Hook",
+          "imageFile": "/assets/specs/grappling_hook.png",
+          "prob": "auto"
+        }
+      ]
+    },
+    "medium": {
+      "weapons": [
+        {
+          "name": "AKM",
+          "imageFile": "/assets/medium_weapons/AKM.png",
+          "prob": "auto"
+        },
+        {
+          "name": "CB-01 Repeater",
+          "imageFile": "/assets/medium_weapons/CB-01.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Cerberus 12GA",
+          "imageFile": "/assets/medium_weapons/cerberus.png",
+          "prob": "auto"
+        },
+        {
+          "name": "CL-40",
+          "imageFile": "/assets/medium_weapons/CL-40.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Dual Blades",
+          "imageFile": "/assets/medium_weapons/dual_blades.png",
+          "prob": "auto"
+        },
+        {
+          "name": "FAMAS",
+          "imageFile": "/assets/medium_weapons/FAMAS.png",
+          "prob": "auto"
+        },
+        {
+          "name": "FCAR",
+          "imageFile": "/assets/medium_weapons/FCAR.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Model 1887",
+          "imageFile": "/assets/medium_weapons/model.png",
+          "prob": "auto"
+        },
+        {
+          "name": "P90",
+          "imageFile": "/assets/medium_weapons/P90.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Pike-556",
+          "imageFile": "/assets/medium_weapons/pike.png",
+          "prob": "auto"
+        },
+        {
+          "name": "R.357",
+          "imageFile": "/assets/medium_weapons/r357.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Riot Shield",
+          "imageFile": "/assets/medium_weapons/riot_shield.png",
+          "prob": "auto"
+        }
+      ],
+      "gadgets": [
+        {
+          "name": "APS Turret",
+          "imageFile": "/assets/gadgets/aps_turret.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Breach Drill",
+          "imageFile": "/assets/gadgets/breach_drill.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Data Reshaper",
+          "imageFile": "/assets/gadgets/data_reshaper.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Defibrillator",
+          "imageFile": "/assets/gadgets/defibs.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Explosive Mine",
+          "imageFile": "/assets/gadgets/explosive_mine.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Flashbang",
+          "imageFile": "/assets/gadgets/flashbang.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Frag Grenade",
+          "imageFile": "/assets/gadgets/frag.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Gas Grenade",
+          "imageFile": "/assets/gadgets/gas_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Gas Mine",
+          "imageFile": "/assets/gadgets/gas_mine.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Glitch Trap",
+          "imageFile": "/assets/gadgets/glitch_trap.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Goo Grenade",
+          "imageFile": "/assets/gadgets/goo_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Jump Pad",
+          "imageFile": "/assets/gadgets/jump_pad.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Proximity Sensor",
+          "imageFile": "/assets/gadgets/prox_sensor.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Pyro Grenade",
+          "imageFile": "/assets/gadgets/pyro_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Zipline",
+          "imageFile": "/assets/gadgets/zipline.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Smoke Grenade",
+          "imageFile": "/assets/gadgets/smoke_nade.png",
+          "prob": "auto"
+        }
+      ],
+      "specializations": [
+        {
+          "name": "Dematerializer",
+          "imageFile": "/assets/specs/dematerializer.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Guardian Turret",
+          "imageFile": "/assets/specs/turret.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Healing Beam",
+          "imageFile": "/assets/specs/heal_beam.png",
+          "prob": "auto"
+        }
+      ]
+    },
+    "heavy": {
+      "weapons": [
+        {
+          "name": ".50 Akimbo",
+          "imageFile": "/assets/heavy_weapons/akimbo.png",
+          "prob": "auto"
+        },
+        {
+          "name": "BFR Titan",
+          "imageFile": "/assets/heavy_weapons/bfr_titan.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Flamethrower",
+          "imageFile": "/assets/heavy_weapons/flamethrower.png",
+          "prob": "auto"
+        },
+        {
+          "name": "KS-23",
+          "imageFile": "/assets/heavy_weapons/ks-23.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Lewis Gun",
+          "imageFile": "/assets/heavy_weapons/lewis_gun.png",
+          "prob": "auto"
+        },
+        {
+          "name": "M134 Minigun",
+          "imageFile": "/assets/heavy_weapons/minigun.png",
+          "prob": "auto"
+        },
+        {
+          "name": "M60",
+          "imageFile": "/assets/heavy_weapons/m60.png",
+          "prob": "auto"
+        },
+        {
+          "name": "MGL32",
+          "imageFile": "/assets/heavy_weapons/mgl32.png",
+          "prob": "auto"
+        },
+        {
+          "name": "SA1216",
+          "imageFile": "/assets/heavy_weapons/SA1216.png",
+          "prob": "auto"
+        },
+        {
+          "name": "ShAK-50",
+          "imageFile": "/assets/heavy_weapons/shak50.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Sledgehammer",
+          "imageFile": "/assets/heavy_weapons/sledgehammer.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Spear",
+          "imageFile": "/assets/heavy_weapons/spear.png",
+          "prob": "auto"
+        }
+      ],
+      "gadgets": [
+        {
+          "name": "Anti-Gravity Cube",
+          "imageFile": "/assets/gadgets/anti-grav_cube.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Barricade",
+          "imageFile": "/assets/gadgets/barricade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "C4",
+          "imageFile": "/assets/gadgets/C4.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Dome Shield",
+          "imageFile": "/assets/gadgets/dome_shield.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Explosive Mine",
+          "imageFile": "/assets/gadgets/explosive_mine.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Flashbang",
+          "imageFile": "/assets/gadgets/flashbang.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Frag Grenade",
+          "imageFile": "/assets/gadgets/frag.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Gas Grenade",
+          "imageFile": "/assets/gadgets/gas_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Goo Grenade",
+          "imageFile": "/assets/gadgets/goo_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Healing Emitter",
+          "imageFile": "/assets/gadgets/healing_emitter.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Proximity Sensor",
+          "imageFile": "/assets/gadgets/prox_sensor.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Pyro Grenade",
+          "imageFile": "/assets/gadgets/pyro_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Pyro Mine",
+          "imageFile": "/assets/gadgets/pyro_mine.png",
+          "prob": "auto"
+        },
+        {
+          "name": "RPG-7",
+          "imageFile": "/assets/gadgets/rpg.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Smoke Grenade",
+          "imageFile": "/assets/gadgets/smoke_nade.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Lockbolt",
+          "imageFile": "/assets/gadgets/lockbolt.png",
+          "prob": "auto"
+        }
+      ],
+      "specializations": [
+        {
+          "name": "Charge 'N' Slam",
+          "imageFile": "/assets/specs/charge_N_slam.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Goo Gun",
+          "imageFile": "/assets/specs/goo_gun.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Mesh Shield",
+          "imageFile": "/assets/specs/mesh_shield.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Winch Claw",
+          "imageFile": "/assets/specs/winch_claw.png",
+          "prob": "auto"
+        }
+      ]
+    }
+  },
+  "gamemodes": {
+    "cashout": {
+      "teams": 4,
+      "players_per_team": 3,
+      "maps": [
+        "bernal__standard",
+        "bernal__suspended_sponsor_structures",
+        "fangwai_city__standard",
+        "fortune_stadium__standard",
+        "kyoto__standard",
+        "kyoto__suspended_structures",
+        "kyoto__moving_platforms",
+        "las_vegas__standard",
+        "las_vegas__sandstorm",
+        "las_vegas_stadium__standard",
+        "las_vegas_stadium__sandstorm",
+        "monaco__standard",
+        "monaco__duck_and_cover",
+        "monaco__suspended_structures",
+        "nozomi_citadel__standard",
+        "seoul__standard",
+        "seoul__moving_platforms",
+        "seoul__under_construction",
+        "skyway_stadium__standard",
+        "skyway_stadium__high_rise",
+        "skyway_stadium__up_down_left_right",
+        "syshorizon__standard"
+      ]
+    },
+    "ranked_cashout": {
+      "teams": 4,
+      "players_per_team": 3,
+      "maps": [
+        "bernal__standard",
+        "bernal__suspended_sponsor_structures",
+        "fangwai_city__standard",
+        "fortune_stadium__standard",
+        "kyoto__standard",
+        "kyoto__suspended_structures",
+        "kyoto__moving_platforms",
+        "las_vegas__standard",
+        "las_vegas__sandstorm",
+        "las_vegas_stadium__standard",
+        "las_vegas_stadium__sandstorm",
+        "monaco__standard",
+        "monaco__duck_and_cover",
+        "monaco__suspended_structures",
+        "nozomi_citadel__standard",
+        "seoul__standard",
+        "seoul__moving_platforms",
+        "seoul__under_construction",
+        "skyway_stadium__standard",
+        "skyway_stadium__high_rise",
+        "skyway_stadium__up_down_left_right",
+        "syshorizon__standard"
+      ]
+    },
+    "head2head": {
+      "teams": 2,
+      "players_per_team": 3,
+      "maps": [
+        "bernal__standard",
+        "bernal__suspended_sponsor_structures",
+        "fangwai_city__standard",
+        "fortune_stadium__standard",
+        "kyoto__standard",
+        "kyoto__suspended_structures",
+        "kyoto__moving_platforms",
+        "las_vegas__standard",
+        "las_vegas__sandstorm",
+        "las_vegas_stadium__standard",
+        "las_vegas_stadium__sandstorm",
+        "monaco__standard",
+        "monaco__duck_and_cover",
+        "monaco__suspended_structures",
+        "nozomi_citadel__standard",
+        "seoul__standard",
+        "seoul__moving_platforms",
+        "seoul__under_construction",
+        "skyway_stadium__standard",
+        "skyway_stadium__high_rise",
+        "skyway_stadium__up_down_left_right",
+        "syshorizon__standard"
+      ]
+    },
+    "point_break": {
+      "teams": 2,
+      "players_per_team": 8,
+      "maps": [
+        "bernal__standard",
+        "monaco__standard",
+        "syshorizon__standard"
+      ]
+    },
+    "power_shift": {
+      "teams": 2,
+      "players_per_team": 5,
+      "maps": [
+        "bernal__standard",
+        "bernal__suspended_sponsor_structures",
+        "kyoto__standard",
+        "kyoto__suspended_structures",
+        "kyoto__moving_platforms",
+        "las_vegas_stadium__standard",
+        "monaco__standard",
+        "nozomi_citadel__standard",
+        "seoul__standard",
+        "skyway_stadium__standard",
+        "syshorizon__standard"
+      ]
+    },
+    "quick_cash": {
+      "teams": 3,
+      "players_per_team": 3,
+      "maps": [
+        "bernal__standard",
+        "bernal__suspended_sponsor_structures",
+        "fangwai_city__standard",
+        "fortune_stadium__standard",
+        "kyoto__standard",
+        "kyoto__suspended_structures",
+        "kyoto__moving_platforms",
+        "las_vegas__standard",
+        "las_vegas__sandstorm",
+        "las_vegas_stadium__standard",
+        "las_vegas_stadium__sandstorm",
+        "monaco__standard",
+        "monaco__duck_and_cover",
+        "monaco__suspended_structures",
+        "nozomi_citadel__standard",
+        "seoul__standard",
+        "seoul__moving_platforms",
+        "seoul__under_construction",
+        "skyway_stadium__standard",
+        "skyway_stadium__high_rise",
+        "skyway_stadium__up_down_left_right",
+        "syshorizon__standard"
+      ]
+    },
+    "team_deathmatch": {
+      "teams": 2,
+      "players_per_team": 5,
+      "maps": [
+        "bernal__standard",
+        "fangwai_city__standard",
+        "fortune_stadium__standard",
+        "kyoto__suspended_structures",
+        "las_vegas_stadium__standard",
+        "nozomi_citadel__standard",
+        "peace_center__standard",
+        "seoul__under_construction",
+        "skyway_stadium__standard",
+        "skyway_stadium__up_down_left_right",
+        "syshorizon__standard"
+      ]
+    }
+  },
+  "game_shows": [
+    {
+      "name": "Alien invasion",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "Low Gravity",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "Mega Damage",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "Meteor showers",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "orbital lasers",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "retro invasion 82",
+      "imageFile": "",
+      "prob": "auto"
+    },
+    {
+      "name": "The dead go boom",
+      "imageFile": "",
+      "prob": "auto"
+    }
+  ]
+}
+

@@ -1,0 +1,453 @@
+/* Mode-specific layout rules (advanced responsive behavior) */
+
+/* JS-driven dynamic layout renderer */
+.teams-container.is-dynamic-layout {
+  display: grid;
+  grid-template-columns: repeat(var(--layout-team-cols), max-content);
+  grid-template-rows: repeat(var(--layout-team-rows), max-content);
+  gap: 1.5rem;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  align-items: start;
+  justify-content: start;
+  align-content: start;
+  overflow: hidden;
+}
+
+.teams-container.is-dynamic-layout .team-block {
+  width: var(--layout-team-block-width);
+  min-width: 0;
+  max-width: 100%;
+  height: var(--layout-team-block-height);
+  max-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.teams-container.is-dynamic-layout .team-slots {
+  display: grid;
+  grid-template-columns: repeat(var(--layout-player-cols), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--layout-player-rows), minmax(0, 1fr));
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  width: var(--layout-player-grid-width);
+  max-width: 100%;
+  height: var(--layout-player-grid-height);
+  max-height: 100%;
+  min-height: 0;
+  margin-bottom: 0;
+  align-content: start;
+  justify-content: start;
+  overflow: hidden;
+}
+
+.teams-container.is-dynamic-layout .team-slot {
+  width: var(--layout-slot-width);
+  height: var(--layout-slot-height);
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.teams-container.is-dynamic-layout .player-slot-content {
+  height: 100%;
+  min-height: 0;
+}
+
+.teams-container.is-dynamic-layout .player-name-row {
+  height: 38px;
+  min-height: 38px;
+  max-height: 38px;
+  flex: 0 0 38px;
+}
+
+.teams-container.is-dynamic-layout .loadout-display {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: repeat(var(--layout-loadout-cols), var(--layout-item-size));
+  grid-template-rows: repeat(var(--layout-loadout-rows), calc(var(--layout-item-size) + var(--layout-label-height)));
+  gap: 0.5rem;
+  width: calc((var(--layout-loadout-cols) * var(--layout-item-size)) + ((var(--layout-loadout-cols) - 1) * 0.5rem));
+  max-width: 100%;
+  justify-content: flex-start;
+  align-content: flex-start;
+  overflow: hidden;
+}
+
+.teams-container.is-dynamic-layout .loadout-item-wrapper {
+  width: var(--layout-item-size);
+  max-width: 100%;
+  height: calc(var(--layout-item-size) + var(--layout-label-height));
+  max-height: calc(var(--layout-item-size) + var(--layout-label-height));
+  min-height: 0;
+  display: grid;
+  grid-template-rows: var(--layout-item-size) var(--layout-label-height);
+  overflow: hidden;
+}
+
+.teams-container.is-dynamic-layout .loadout-item.class-item,
+.teams-container.is-dynamic-layout .loadout-item.spec-item,
+.teams-container.is-dynamic-layout .loadout-item.weapon-item,
+.teams-container.is-dynamic-layout .loadout-item.gadget-item {
+  width: var(--layout-item-size);
+  height: var(--layout-item-size);
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.teams-container.is-dynamic-layout .loadout-item-label {
+  width: var(--layout-item-size);
+  min-width: var(--layout-item-size);
+  max-width: var(--layout-item-size);
+  height: 30px;
+  min-height: 30px;
+  max-height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  align-items: center;
+  justify-content: center;
+  margin-inline: auto;
+  overflow: hidden;
+  font-size: var(--layout-label-font-size, 16px);
+}
+
+.teams-container.is-dynamic-layout .loadout-item-label.medium-label {
+  font-size: var(--layout-label-font-size-medium, 15px);
+}
+
+.teams-container.is-dynamic-layout .loadout-item-label.long-label {
+  font-size: var(--layout-label-font-size-long, 14px);
+}
+
+/* Team Deathmatch: orientation-aware team arrangement */
+.teams-container.teams-container-tdm {
+  width: 100%;
+}
+
+.teams-container.teams-container-tdm.is-landscape {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.teams-container.teams-container-tdm.is-landscape .team-slots {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-rows: 1fr;
+  gap: 0.5rem;
+  width: 100%;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+
+.teams-container.teams-container-tdm.is-landscape.is-three-per-team .team-slots {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Head2Head uses TDM-like layout with 3 slots per team */
+.teams-container.mode-head2head.teams-container-tdm.is-landscape .team-slots {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.teams-container.mode-head2head.teams-container-tdm.is-landscape {
+  height: 100%;
+}
+
+.teams-container.mode-head2head.teams-container-tdm.is-landscape .team-block {
+  height: calc((100% - 1.5rem) / 2);
+  min-height: 0;
+}
+
+.teams-container.mode-head2head.teams-container-tdm.is-landscape .team-slot {
+  min-height: 0;
+}
+
+.teams-container.mode-head2head.teams-container-tdm.is-landscape .player-slot-content {
+  height: 100%;
+  min-height: 0;
+}
+
+.teams-container.mode-head2head.teams-container-tdm.is-landscape .loadout-display {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.teams-container.teams-container-tdm.is-landscape .team-block {
+  width: unset;
+  min-width: unset;
+  max-width: 100%;
+}
+
+.teams-container.teams-container-tdm.is-landscape .team-slot {
+  width: unset;
+  min-width: 0;
+  max-width: none;
+  height: 100%;
+}
+
+.teams-container.teams-container-tdm.is-portrait {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.teams-container.teams-container-tdm.is-portrait .team-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  height: calc(100dvh - 1.5rem - 100px);
+}
+
+.teams-container.teams-container-tdm.is-portrait .team-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+  justify-content: flex-start;
+}
+
+.teams-container.teams-container-tdm.is-portrait .team-slot {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: auto;
+  max-height: calc((100% - 2rem) / 5);
+  flex: 0 1 calc((100% - 2rem) / 5);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.teams-container.teams-container-tdm.is-portrait.is-three-per-team .team-slot {
+  max-height: calc((100% - 1rem) / 3);
+  flex: 0 1 calc((100% - 1rem) / 3);
+}
+
+.teams-container.mode-head2head.teams-container-tdm.is-portrait .team-slot {
+  max-height: calc((100% - 1rem) / 3);
+  flex: 0 1 calc((100% - 1rem) / 3);
+}
+
+.teams-container.teams-container-tdm.is-portrait .player-slot-content {
+  height: 100%;
+  min-height: 0;
+}
+
+.teams-container.teams-container-tdm.is-portrait .loadout-display {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-rows: 1fr;
+}
+
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .loadout-display {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .loadout-item-wrapper {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .loadout-item.class-item,
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .loadout-item.spec-item,
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .loadout-item.weapon-item,
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .loadout-item.gadget-item {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  margin-inline: auto;
+}
+
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .loadout-item-label {
+  min-height: 1.4rem;
+}
+
+.teams-container.teams-container-tdm.is-portrait.is-tall-portrait .team-slot {
+  width: auto;
+  align-self: center;
+  /* In 3x2 tall-portrait, cap slot width by available slot height to avoid wide horizontal gaps */
+  max-width: min(100%, calc(((100% - 2rem) / 5) * 3.35));
+}
+
+.teams-container.teams-container-tdm.is-portrait .loadout-item-wrapper {
+  width: 100%;
+  height: auto;
+  justify-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.teams-container.teams-container-tdm.is-portrait .loadout-item.class-item,
+.teams-container.teams-container-tdm.is-portrait .loadout-item.spec-item,
+.teams-container.teams-container-tdm.is-portrait .loadout-item.weapon-item,
+.teams-container.teams-container-tdm.is-portrait .loadout-item.gadget-item {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+}
+
+.teams-container.teams-container-tdm.is-portrait .loadout-item-label {
+  width: 100%;
+}
+
+/* Point Break (8v8): default team layout is 4 rows x 2 columns */
+.teams-container.mode-point-break {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.teams-container.mode-point-break .team-block {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-width: calc((100% - 4.5rem) / 2);
+  height: calc(100dvh - 4.5rem - 100px);
+  align-items: stretch;
+}
+
+.teams-container.mode-point-break .team-slots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  flex: 1;
+  min-height: 0;
+  align-content: stretch;
+  justify-content: stretch;
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.teams-container.mode-point-break .team-slot {
+  --pb-label-height: 1.75rem;
+  --pb-header-reserve: 2.5rem;
+  --pb-item-size: min(
+    calc((100cqw - 1rem) / 3),
+    calc((100cqh - var(--pb-header-reserve) - 0.5rem - (2 * var(--pb-label-height))) / 2)
+  );
+  container-type: size;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.teams-container.mode-point-break .team-slot.empty {
+  width: 100%;
+}
+
+.teams-container.mode-point-break .player-slot-content {
+  height: 100%;
+  min-height: 0;
+}
+
+.teams-container.mode-point-break .team-slot.filled .player-slot-content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin-inline: 0;
+}
+
+.teams-container.mode-point-break .loadout-display {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: repeat(3, var(--pb-item-size));
+  grid-template-rows: repeat(2, auto);
+  width: calc((3 * var(--pb-item-size)) + 1rem);
+  max-width: 100%;
+  justify-content: flex-start;
+  justify-items: stretch;
+}
+
+.teams-container.mode-point-break .loadout-item-wrapper {
+  width: var(--pb-item-size);
+  max-width: 100%;
+  height: auto;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: var(--pb-item-size) var(--pb-label-height);
+  justify-self: stretch;
+}
+
+.teams-container.mode-point-break .loadout-item.class-item,
+.teams-container.mode-point-break .loadout-item.spec-item,
+.teams-container.mode-point-break .loadout-item.weapon-item,
+.teams-container.mode-point-break .loadout-item.gadget-item {
+  width: var(--pb-item-size);
+  height: var(--pb-item-size);
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.teams-container.mode-point-break .loadout-item-label,
+.teams-container.mode-point-break .loadout-item-label.medium-label,
+.teams-container.mode-point-break .loadout-item-label.long-label {
+  font-size: 16px;
+  width: var(--pb-item-size);
+  min-width: var(--pb-item-size);
+  max-width: var(--pb-item-size);
+  margin-inline: auto;
+  justify-self: center;
+}
+
+/* Enforce JS-computed item width in dynamic layouts */
+.teams-container.is-dynamic-layout .loadout-item-wrapper {
+  width: var(--layout-item-size);
+  min-width: var(--layout-item-size);
+  max-width: var(--layout-item-size);
+}
+
+.teams-container.is-dynamic-layout .loadout-item.class-item,
+.teams-container.is-dynamic-layout .loadout-item.spec-item,
+.teams-container.is-dynamic-layout .loadout-item.weapon-item,
+.teams-container.is-dynamic-layout .loadout-item.gadget-item {
+  width: var(--layout-item-size);
+  min-width: var(--layout-item-size);
+  max-width: var(--layout-item-size);
+}
+
+@media (max-width: 800px) {
+  .teams-container.is-dynamic-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .teams-container.is-dynamic-layout .team-block {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+}
