@@ -1,25 +1,31 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useLayoutEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import './App.css'
 import './layouts.css'
 import gameConfig from '../game-config.json'
 import mapsConfig from '../maps-config.json'
 import { computeDynamicLayout } from './layoutEngine'
 import { supabase } from './lib/supabaseClient'
-import { fetchPersistedState, savePersistedState } from './services/stateStore'
+import { subscribeToGroupLoadoutChanges, subscribeToGroupMembershipChanges } from './api/realtime'
 import {
-  fetchUserRole,
-  signInWithEmail,
-  signUpWithEmail,
-  signOut as authSignOut
-} from './services/authService'
+  fetchGroupPersistedState,
+  saveGroupPersistedState,
+  fetchUserGroupPersistedState,
+  saveUserGroupPersistedState
+} from './services/stateStore'
+import { signOut as authSignOut } from './services/authService'
+import { useAuth } from './auth/authContext'
+import {
+  fetchMyGroups,
+  fetchRoleInGroup,
+  joinGroupByCode,
+  createGroup,
+  fetchGroupMembers
+} from './services/groupService'
 
 const STATE_VERSION = '1.0.0'
 const SETTINGS_ALL_PLAYERS = '__all_players__'
 const SIDEBAR_OVERLAY_BREAKPOINT = 1440
-const SUPABASE_STATE_TABLE = import.meta.env.VITE_SUPABASE_STATE_TABLE || 'loadout_states'
-const SUPABASE_STATE_PROFILE = import.meta.env.VITE_SUPABASE_STATE_PROFILE || 'default'
-const REMOTE_APPLY_SUPPRESS_MS = 500
-
 const stableSerialize = (value) => {
   const normalize = (input) => {
     if (Array.isArray(input)) {
@@ -141,33 +147,90 @@ const ChevronRightIcon = () => (
   </svg>
 )
 
+const DASHBOARD_MEMBER_CHIP_PREVIEW = 3
+
+function hashString32(str) {
+  let h = 0
+  for (let i = 0; i < str.length; i += 1) {
+    h = Math.imul(31, h) + str.charCodeAt(i) | 0
+  }
+  return h >>> 0
+}
+
+function groupDashboardBannerStyle(groupId) {
+  const h = hashString32(groupId)
+  const h1 = h % 360
+  const h2 = Math.imul(h, 7919) % 360
+  return {
+    background: `linear-gradient(128deg, hsl(${h1} 72% 38%) 0%, hsl(${h2} 58% 24%) 100%)`
+  }
+}
+
+function memberChipColor(userId) {
+  const hue = hashString32(userId) % 360
+  return `hsl(${hue} 52% 46%)`
+}
+
+/** @param {Array<{ user_id: string }>} memberRows */
+function sortAndDedupeUserIds(memberRows) {
+  const ids = [...new Set((memberRows || []).map((r) => r.user_id).filter(Boolean))]
+  ids.sort((a, b) => a.localeCompare(b))
+  return ids
+}
+
+/** @param {Array<{ user_id: string, display_name?: string | null }>} memberRows */
+function buildGroupMemberLabelMap(memberRows, sessionUserId, selfDisplayName) {
+  const map = {}
+  for (const row of memberRows || []) {
+    const id = row?.user_id
+    if (!id) continue
+    if (id === sessionUserId) {
+      map[id] = selfDisplayName || `You (${id.slice(0, 8)})`
+    } else if (row?.display_name) {
+      map[id] = row.display_name
+    } else {
+      map[id] = `Member · ${id.slice(-6)}`
+    }
+  }
+  return map
+}
+
 function App() {
+  const navigate = useNavigate()
+  const { session } = useAuth()
   const [selectedGamemode, setSelectedGamemode] = useState(null)
   const [selectedMapId, setSelectedMapId] = useState(null) // e.g., "bernal__standard"
   const [selectedWeather, setSelectedWeather] = useState(null)
   const [selectedLoadoutRandomTarget, setSelectedLoadoutRandomTarget] = useState('')
-  const [session, setSession] = useState(null)
-  const [authReady, setAuthReady] = useState(false)
-  const [userRole, setUserRole] = useState(null)
-  const [authEmail, setAuthEmail] = useState('')
-  const [authPassword, setAuthPassword] = useState('')
-  const [authMode, setAuthMode] = useState('signin')
-  const [authError, setAuthError] = useState('')
-  const [authBusy, setAuthBusy] = useState(false)
+  const [activeGroupId, setActiveGroupId] = useState(null)
+  const [groupRole, setGroupRole] = useState(null)
+  const [myGroups, setMyGroups] = useState([])
+  const [groupsLoadError, setGroupsLoadError] = useState('')
+  const [joinCodeInput, setJoinCodeInput] = useState('')
+  const [joinBusy, setJoinBusy] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+  const [createGroupBusy, setCreateGroupBusy] = useState(false)
+  const [createGroupModalOpen, setCreateGroupModalOpen] = useState(false)
+  const [groupsInitialised, setGroupsInitialised] = useState(false)
   const [lockedGamemode, setLockedGamemode] = useState(false)
   const [lockedMap, setLockedMap] = useState(false)
   const [lockedWeather, setLockedWeather] = useState(false)
   const [lockedLoadoutRandomTarget, setLockedLoadoutRandomTarget] = useState(false)
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+    () => window.innerWidth < SIDEBAR_OVERLAY_BREAKPOINT
+  )
   const [isSidebarOverlayMode, setIsSidebarOverlayMode] = useState(
     () => window.innerWidth < SIDEBAR_OVERLAY_BREAKPOINT
   )
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [participants, setParticipants] = useState([])
-  const [newParticipant, setNewParticipant] = useState('')
+  const [groupMemberLabels, setGroupMemberLabels] = useState({})
+  const [groupMembersReady, setGroupMembersReady] = useState(false)
+  const [groupMembersError, setGroupMembersError] = useState('')
   const [teamAssignments, setTeamAssignments] = useState({})
   const [lockedParticipants, setLockedParticipants] = useState({}) // { participantName: teamIndex }
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
+  const [isUserSettingsModalOpen, setIsUserSettingsModalOpen] = useState(false)
   const [isTeamSettingsModalOpen, setIsTeamSettingsModalOpen] = useState(false)
   const [balancedTeams, setBalancedTeams] = useState(true)
   const [fillFirst, setFillFirst] = useState(false)
@@ -197,100 +260,214 @@ function App() {
     playerNameRowHeight: null,
     assignOptionsReserve: null
   })
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false)
   const isInitialLoad = useRef(true)
   const skipNextPersistRef = useRef(false)
-  const suppressPersistUntilRef = useRef(0)
-  const lastPersistedStateRef = useRef('')
+  const lastGroupPersistedRef = useRef('')
+  const lastUserPersistedRef = useRef('')
   const teamsPanelRef = useRef(null)
-  const isViewOnlyMode = userRole !== 'admin'
+  const profileMenuButtonRef = useRef(null)
+  const profileMenuRef = useRef(null)
+  const isViewOnlyMode = groupRole === 'member'
+  const profileDisplayName = useMemo(() => {
+    const first = (session?.user?.user_metadata?.first_name || '').trim()
+    const last = (session?.user?.user_metadata?.last_name || '').trim()
+    const full = `${first} ${last}`.trim()
+    return full || session?.user?.email || 'Profile'
+  }, [session?.user?.email, session?.user?.user_metadata?.first_name, session?.user?.user_metadata?.last_name])
+  const profileAvatarUrl = useMemo(() => {
+    const explicitAvatar = session?.user?.user_metadata?.avatar_url
+    if (explicitAvatar) return explicitAvatar
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(profileDisplayName)}&background=2a2a2a&color=ffffff&size=96&bold=true`
+  }, [profileDisplayName, session?.user?.user_metadata?.avatar_url])
+
+  const pruneInvalidParticipantReferences = useCallback((validIds) => {
+    const valid = new Set(validIds)
+    setTeamAssignments((prev) => {
+      let changed = false
+      const next = {}
+      for (const [k, arr] of Object.entries(prev || {})) {
+        const list = arr || []
+        const filtered = list.filter((p) => valid.has(p))
+        if (filtered.length !== list.length) changed = true
+        next[k] = filtered
+      }
+      return changed ? next : prev
+    })
+    setLockedParticipants((prev) => {
+      const next = {}
+      let changed = false
+      for (const [p, ti] of Object.entries(prev || {})) {
+        if (valid.has(p)) next[p] = ti
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+    setLoadouts((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const key of Object.keys(next)) {
+        if (!valid.has(key)) {
+          delete next[key]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    setLockedLoadouts((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const key of Object.keys(next)) {
+        if (!valid.has(key)) {
+          delete next[key]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    setExcludedItems((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const key of Object.keys(next)) {
+        if (!valid.has(key)) {
+          delete next[key]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    setPlayerOverrides((prev) => {
+      const next = Object.fromEntries(Object.entries(prev).filter(([k]) => valid.has(k)))
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next
+    })
+    setKeepSeparatePairs((prev) => {
+      const next = prev.filter((pair) => valid.has(pair.playerA) && valid.has(pair.playerB))
+      return next.length === prev.length ? prev : next
+    })
+  }, [])
+
+  const labelForParticipant = useCallback(
+    (participantId) => {
+      if (!participantId) return ''
+      if (participantId === session?.user?.id) return profileDisplayName
+      return groupMemberLabels[participantId] || `Member · ${String(participantId).slice(-6)}`
+    },
+    [session?.user?.id, profileDisplayName, groupMemberLabels]
+  )
 
   const gamemodes = Object.keys(gameConfig.gamemodes)
   const loadoutRandomTargets = ['Weapon', 'Specialization', '2 Gadgets']
 
-  const applyPersistedState = (parsed) => {
-    if (parsed.selectedGamemode !== undefined) setSelectedGamemode(parsed.selectedGamemode)
-    if (parsed.participants !== undefined) setParticipants(parsed.participants)
-    if (parsed.teamAssignments !== undefined) setTeamAssignments(parsed.teamAssignments)
-    if (parsed.lockedParticipants !== undefined) setLockedParticipants(parsed.lockedParticipants)
-    if (parsed.balancedTeams !== undefined) setBalancedTeams(parsed.balancedTeams)
-    if (parsed.fillFirst !== undefined) setFillFirst(parsed.fillFirst)
-    if (parsed.keepSeparatePairs !== undefined) setKeepSeparatePairs(parsed.keepSeparatePairs)
-    if (parsed.loadouts) setLoadouts(parsed.loadouts)
-    if (parsed.lockedLoadouts) setLockedLoadouts(parsed.lockedLoadouts)
-    if (parsed.excludedItems !== undefined) setExcludedItems(parsed.excludedItems)
-    if (parsed.classInputs !== undefined) setClassInputs(parsed.classInputs)
-    if (parsed.classEnabled !== undefined) setClassEnabled(parsed.classEnabled)
-    if (parsed.specializationInputs !== undefined) setSpecializationInputs(parsed.specializationInputs)
-    if (parsed.specializationEnabled !== undefined) setSpecializationEnabled(parsed.specializationEnabled)
-    if (parsed.weaponInputs !== undefined) setWeaponInputs(parsed.weaponInputs)
-    if (parsed.weaponEnabled !== undefined) setWeaponEnabled(parsed.weaponEnabled)
-    if (parsed.gadgetInputs !== undefined) setGadgetInputs(parsed.gadgetInputs)
-    if (parsed.gadgetEnabled !== undefined) setGadgetEnabled(parsed.gadgetEnabled)
-    if (parsed.playerOverrides !== undefined) setPlayerOverrides(parsed.playerOverrides)
-    if (parsed.selectedMapId !== undefined) setSelectedMapId(parsed.selectedMapId)
-    if (parsed.selectedWeather !== undefined) setSelectedWeather(parsed.selectedWeather)
-    if (parsed.selectedLoadoutRandomTarget !== undefined) setSelectedLoadoutRandomTarget(parsed.selectedLoadoutRandomTarget)
-    if (parsed.lockedGamemode !== undefined) setLockedGamemode(parsed.lockedGamemode)
-    if (parsed.lockedMap !== undefined) setLockedMap(parsed.lockedMap)
-    if (parsed.lockedWeather !== undefined) setLockedWeather(parsed.lockedWeather)
-    if (parsed.lockedLoadoutRandomTarget !== undefined) setLockedLoadoutRandomTarget(parsed.lockedLoadoutRandomTarget)
-    if (parsed.isSidebarCollapsed !== undefined) setIsSidebarCollapsed(parsed.isSidebarCollapsed)
-  }
+  const applyPersistedState = useCallback(
+    (parsed) => {
+      if (parsed.selectedGamemode !== undefined) setSelectedGamemode(parsed.selectedGamemode)
+      if (parsed.participants !== undefined && !activeGroupId) setParticipants(parsed.participants)
+      if (parsed.teamAssignments !== undefined) setTeamAssignments(parsed.teamAssignments)
+      if (parsed.lockedParticipants !== undefined) setLockedParticipants(parsed.lockedParticipants)
+      if (parsed.balancedTeams !== undefined) setBalancedTeams(parsed.balancedTeams)
+      if (parsed.fillFirst !== undefined) setFillFirst(parsed.fillFirst)
+      if (parsed.keepSeparatePairs !== undefined) setKeepSeparatePairs(parsed.keepSeparatePairs)
+      if (parsed.loadouts) setLoadouts(parsed.loadouts)
+      if (parsed.lockedLoadouts) setLockedLoadouts(parsed.lockedLoadouts)
+      if (parsed.excludedItems !== undefined) setExcludedItems(parsed.excludedItems)
+      if (parsed.classInputs !== undefined) setClassInputs(parsed.classInputs)
+      if (parsed.classEnabled !== undefined) setClassEnabled(parsed.classEnabled)
+      if (parsed.specializationInputs !== undefined) setSpecializationInputs(parsed.specializationInputs)
+      if (parsed.specializationEnabled !== undefined) setSpecializationEnabled(parsed.specializationEnabled)
+      if (parsed.weaponInputs !== undefined) setWeaponInputs(parsed.weaponInputs)
+      if (parsed.weaponEnabled !== undefined) setWeaponEnabled(parsed.weaponEnabled)
+      if (parsed.gadgetInputs !== undefined) setGadgetInputs(parsed.gadgetInputs)
+      if (parsed.gadgetEnabled !== undefined) setGadgetEnabled(parsed.gadgetEnabled)
+      if (parsed.playerOverrides !== undefined) setPlayerOverrides(parsed.playerOverrides)
+      if (parsed.selectedMapId !== undefined) setSelectedMapId(parsed.selectedMapId)
+      if (parsed.selectedWeather !== undefined) setSelectedWeather(parsed.selectedWeather)
+      if (parsed.selectedLoadoutRandomTarget !== undefined)
+        setSelectedLoadoutRandomTarget(parsed.selectedLoadoutRandomTarget)
+      if (parsed.lockedGamemode !== undefined) setLockedGamemode(parsed.lockedGamemode)
+      if (parsed.lockedMap !== undefined) setLockedMap(parsed.lockedMap)
+      if (parsed.lockedWeather !== undefined) setLockedWeather(parsed.lockedWeather)
+      if (parsed.lockedLoadoutRandomTarget !== undefined)
+        setLockedLoadoutRandomTarget(parsed.lockedLoadoutRandomTarget)
+      if (parsed.isSidebarCollapsed !== undefined) setIsSidebarCollapsed(parsed.isSidebarCollapsed)
+    },
+    [activeGroupId]
+  )
 
   useEffect(() => {
-    if (!supabase) {
-      setAuthReady(true)
-      setSession(null)
-      setUserRole(null)
+    if (!session?.user?.id || !supabase) {
+      setGroupsInitialised(false)
+      setMyGroups([])
       return
     }
 
-    let mounted = true
+    let cancelled = false
+    setGroupsLoadError('')
+    setGroupsInitialised(false)
 
-    const syncRole = async (user) => {
-      if (!user) {
-        if (mounted) setUserRole(null)
-        return
-      }
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+    ;(async () => {
       try {
-        const role = await fetchUserRole(user.id)
-        if (mounted) setUserRole(role)
+        const params = new URLSearchParams(window.location.search)
+        const g = params.get('group')
+
+        if (g && uuidRe.test(g)) {
+          const role = await fetchRoleInGroup(session.user.id, g)
+          if (cancelled) return
+          if (role) {
+            setActiveGroupId(g)
+            setGroupRole(role)
+          } else {
+            const url = new URL(window.location.href)
+            url.searchParams.delete('group')
+            window.history.replaceState({}, '', `${url.pathname}${url.search}`)
+            setGroupsLoadError('That group link is invalid or you are not a member.')
+            setActiveGroupId(null)
+            setGroupRole(null)
+          }
+        } else {
+          if (g) {
+            const url = new URL(window.location.href)
+            url.searchParams.delete('group')
+            window.history.replaceState({}, '', `${url.pathname}${url.search}`)
+          }
+          setActiveGroupId(null)
+          setGroupRole(null)
+        }
+
+        const list = await fetchMyGroups(session.user.id)
+        if (cancelled) return
+        setMyGroups(list)
       } catch (error) {
-        console.error('[Auth] Failed to load role:', error)
-        if (mounted) setUserRole('view')
+        if (!cancelled) {
+          setGroupsLoadError(error.message || 'Failed to load groups.')
+        }
+      } finally {
+        if (!cancelled) setGroupsInitialised(true)
       }
-    }
-
-    const init = async () => {
-      const {
-        data: { session: initialSession }
-      } = await supabase.auth.getSession()
-      if (!mounted) return
-      setSession(initialSession)
-      await syncRole(initialSession?.user ?? null)
-      setAuthReady(true)
-    }
-
-    init()
-
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      if (!mounted) return
-      setSession(nextSession)
-      setUserRole(null)
-      await syncRole(nextSession?.user ?? null)
-    })
+    })()
 
     return () => {
-      mounted = false
-      subscription.unsubscribe()
+      cancelled = true
     }
-  }, [])
+  }, [session?.user?.id])
 
-  // Load persisted state once signed in (RLS requires authentication)
   useEffect(() => {
-    if (!session?.user || !userRole) {
+    isInitialLoad.current = true
+    skipNextPersistRef.current = true
+    lastGroupPersistedRef.current = ''
+    lastUserPersistedRef.current = ''
+    setIsSidebarCollapsed(false)
+    setParticipants([])
+    setGroupMemberLabels({})
+    setGroupMembersReady(false)
+    setGroupMembersError('')
+  }, [activeGroupId])
+
+  // Load persisted state for the active group (RLS requires authentication)
+  useEffect(() => {
+    if (!session?.user || !activeGroupId || !groupRole) {
       isInitialLoad.current = true
       return
     }
@@ -298,23 +475,63 @@ function App() {
     let isCancelled = false
 
     const loadState = async () => {
+      setGroupMembersReady(false)
       try {
-        const parsed = await fetchPersistedState()
-        if (!parsed || isCancelled) return
-
-        if (parsed.version !== STATE_VERSION) {
-          console.warn('[State] Ignoring persisted state due to version mismatch')
-          return
+        const [parsed, userParsed] = await Promise.all([
+          fetchGroupPersistedState(activeGroupId),
+          fetchUserGroupPersistedState(activeGroupId)
+        ])
+        let memberIds = null
+        let memberRows = []
+        try {
+          memberRows = await fetchGroupMembers(activeGroupId)
+          memberIds = sortAndDedupeUserIds(memberRows)
+          if (!isCancelled) setGroupMembersError('')
+        } catch (err) {
+          console.error('[Group] Failed to load members:', err)
+          if (!isCancelled) {
+            setGroupMembersError(err.message || 'Failed to load group members.')
+          }
         }
-        lastPersistedStateRef.current = stableSerialize(parsed)
-        skipNextPersistRef.current = true
-        suppressPersistUntilRef.current = Date.now() + REMOTE_APPLY_SUPPRESS_MS
-        applyPersistedState(parsed)
+        if (isCancelled) return
+
+        if (memberIds) {
+          setGroupMemberLabels(buildGroupMemberLabelMap(memberRows, session.user.id, profileDisplayName))
+          setParticipants(memberIds)
+        }
+
+        if (parsed) {
+          if (parsed.version !== STATE_VERSION) {
+            console.warn('[State] Ignoring persisted state due to version mismatch')
+            if (memberIds) pruneInvalidParticipantReferences(memberIds)
+          } else {
+            const sharedSer = stableSerialize(parsed)
+            lastGroupPersistedRef.current = sharedSer
+            skipNextPersistRef.current = true
+            applyPersistedState(parsed)
+            if (memberIds) pruneInvalidParticipantReferences(memberIds)
+          }
+        } else {
+          if (memberIds) pruneInvalidParticipantReferences(memberIds)
+        }
+
+        if (userParsed && typeof userParsed.isSidebarCollapsed === 'boolean') {
+          setIsSidebarCollapsed(userParsed.isSidebarCollapsed)
+        }
+
+        const refCollapsed =
+          userParsed && typeof userParsed.isSidebarCollapsed === 'boolean'
+            ? userParsed.isSidebarCollapsed
+            : parsed && parsed.version === STATE_VERSION && parsed.isSidebarCollapsed !== undefined
+              ? parsed.isSidebarCollapsed
+              : false
+        lastUserPersistedRef.current = stableSerialize({ isSidebarCollapsed: refCollapsed })
       } catch (error) {
         console.error('[State] Error loading persisted state:', error)
       } finally {
         if (!isCancelled) {
           isInitialLoad.current = false
+          setGroupMembersReady(true)
         }
       }
     }
@@ -324,18 +541,19 @@ function App() {
     return () => {
       isCancelled = true
     }
-  }, [session?.user, userRole])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only affects labels (labelForParticipant); omit to avoid reloading shared state
+  }, [session?.user, activeGroupId, groupRole, pruneInvalidParticipantReferences, applyPersistedState])
 
-  // Save state to Supabase whenever it changes (but not during initial load)
+  // Save shared state (owners/admins) and per-user prefs for the active group
   useEffect(() => {
     if (isInitialLoad.current) return
-    if (userRole !== 'admin') return
+    if (!activeGroupId || !groupRole) return
     if (skipNextPersistRef.current) {
       skipNextPersistRef.current = false
       return
     }
 
-    const stateToSave = {
+    const sharedState = {
       version: STATE_VERSION,
       selectedGamemode,
       selectedMapId,
@@ -345,7 +563,6 @@ function App() {
       lockedMap,
       lockedWeather,
       lockedLoadoutRandomTarget,
-      isSidebarCollapsed,
       participants,
       teamAssignments,
       lockedParticipants,
@@ -366,58 +583,128 @@ function App() {
       playerOverrides
     }
 
-    const serializedState = stableSerialize(stateToSave)
-    if (serializedState === lastPersistedStateRef.current) return
+    const userState = { isSidebarCollapsed }
 
-    savePersistedState(stateToSave)
-      .then(() => {
-        // Mark as persisted only after successful write.
-        lastPersistedStateRef.current = serializedState
-      })
-      .catch((error) => {
-        console.error('[State] Error saving persisted state:', error)
-      })
-  }, [userRole, selectedGamemode, selectedMapId, selectedWeather, selectedLoadoutRandomTarget, lockedGamemode, lockedMap, lockedWeather, lockedLoadoutRandomTarget, isSidebarCollapsed, participants, teamAssignments, lockedParticipants, balancedTeams, fillFirst, keepSeparatePairs, loadouts, lockedLoadouts, excludedItems, classInputs, classEnabled, specializationInputs, specializationEnabled, weaponInputs, weaponEnabled, gadgetInputs, gadgetEnabled, playerOverrides])
+    const canWriteShared = groupRole === 'owner' || groupRole === 'admin'
+    const sharedSer = stableSerialize(sharedState)
+
+    if (canWriteShared && sharedSer !== lastGroupPersistedRef.current) {
+      saveGroupPersistedState(activeGroupId, sharedState)
+        .then(() => {
+          lastGroupPersistedRef.current = sharedSer
+        })
+        .catch((error) => {
+          console.error('[State] Error saving group persisted state:', error)
+        })
+    }
+
+    const userSer = stableSerialize(userState)
+    if (userSer !== lastUserPersistedRef.current) {
+      saveUserGroupPersistedState(activeGroupId, userState)
+        .then(() => {
+          lastUserPersistedRef.current = userSer
+        })
+        .catch((error) => {
+          console.error('[State] Error saving user group state:', error)
+        })
+    }
+  }, [
+    groupRole,
+    activeGroupId,
+    selectedGamemode,
+    selectedMapId,
+    selectedWeather,
+    selectedLoadoutRandomTarget,
+    lockedGamemode,
+    lockedMap,
+    lockedWeather,
+    lockedLoadoutRandomTarget,
+    isSidebarCollapsed,
+    participants,
+    teamAssignments,
+    lockedParticipants,
+    balancedTeams,
+    fillFirst,
+    keepSeparatePairs,
+    loadouts,
+    lockedLoadouts,
+    excludedItems,
+    classInputs,
+    classEnabled,
+    specializationInputs,
+    specializationEnabled,
+    weaponInputs,
+    weaponEnabled,
+    gadgetInputs,
+    gadgetEnabled,
+    playerOverrides
+  ])
 
   useEffect(() => {
-    if (!supabase || !session?.user) return
+    if (!supabase || !session?.user || !activeGroupId) return
 
     let isMounted = true
-    const channel = supabase
-      .channel('loadout-state-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: SUPABASE_STATE_TABLE,
-          filter: `profile_key=eq.${SUPABASE_STATE_PROFILE}`
-        },
-        async () => {
-          if (!isMounted) return
-          try {
-            const latest = await fetchPersistedState()
-            if (!latest || latest.version !== STATE_VERSION) return
+    const unsubscribe = subscribeToGroupLoadoutChanges(supabase, activeGroupId, async () => {
+      if (!isMounted) return
+      try {
+        const [latest, memberRows] = await Promise.all([
+          fetchGroupPersistedState(activeGroupId),
+          fetchGroupMembers(activeGroupId)
+        ])
+        if (!isMounted) return
 
-            const serializedLatest = stableSerialize(latest)
-            if (serializedLatest === lastPersistedStateRef.current) return
+        const memberIds = sortAndDedupeUserIds(memberRows)
+        setGroupMemberLabels(buildGroupMemberLabelMap(memberRows, session.user.id, profileDisplayName))
+        setParticipants(memberIds)
+        pruneInvalidParticipantReferences(memberIds)
 
-            lastPersistedStateRef.current = serializedLatest
-            skipNextPersistRef.current = true
-            suppressPersistUntilRef.current = Date.now() + REMOTE_APPLY_SUPPRESS_MS
-            applyPersistedState(latest)
-          } catch (error) {
-            console.error('[Realtime] Failed to sync state update:', error)
-          }
-        }
-      )
-      .subscribe()
+        if (!latest || latest.version !== STATE_VERSION) return
+
+        const serializedLatest = stableSerialize(latest)
+        if (serializedLatest === lastGroupPersistedRef.current) return
+
+        lastGroupPersistedRef.current = serializedLatest
+        skipNextPersistRef.current = true
+        applyPersistedState(latest)
+        pruneInvalidParticipantReferences(memberIds)
+      } catch (error) {
+        console.error('[Realtime] Failed to sync state update:', error)
+      }
+    })
 
     return () => {
       isMounted = false
-      supabase.removeChannel(channel)
+      unsubscribe()
     }
-  }, [session?.user])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
+  }, [session?.user, activeGroupId, pruneInvalidParticipantReferences, applyPersistedState])
+
+  useEffect(() => {
+    if (!supabase || !session?.user || !activeGroupId) return
+
+    let isMounted = true
+    const unsubscribe = subscribeToGroupMembershipChanges(supabase, activeGroupId, async () => {
+      if (!isMounted) return
+      try {
+        const memberRows = await fetchGroupMembers(activeGroupId)
+        if (!isMounted) return
+        const memberIds = sortAndDedupeUserIds(memberRows)
+        setGroupMemberLabels(buildGroupMemberLabelMap(memberRows, session.user.id, profileDisplayName))
+        setParticipants(memberIds)
+        pruneInvalidParticipantReferences(memberIds)
+        setGroupMembersError('')
+      } catch (error) {
+        console.error('[Realtime] Failed to sync membership update:', error)
+        if (isMounted) setGroupMembersError(error.message || 'Failed to load group members.')
+      }
+    })
+
+    return () => {
+      isMounted = false
+      unsubscribe()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
+  }, [session?.user, activeGroupId, pruneInvalidParticipantReferences])
 
   useEffect(() => {
     const updateSidebarMode = () => {
@@ -431,7 +718,7 @@ function App() {
     return () => window.removeEventListener('resize', updateSidebarMode)
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // On narrow screens, sidebar starts closed by default.
     if (isSidebarOverlayMode) {
       setIsSidebarCollapsed(true)
@@ -442,49 +729,91 @@ function App() {
     if (!isViewOnlyMode) return
     setIsSidebarCollapsed(true)
     setIsSettingsModalOpen(false)
+    setIsUserSettingsModalOpen(false)
     setIsTeamSettingsModalOpen(false)
     setLoadoutSelector(null)
     setRemoveConfirmation(null)
   }, [isViewOnlyMode])
 
-  const handleAuthSubmit = async () => {
-    if (!supabase) {
-      setAuthError('Supabase is not configured (URL / anon key).')
-      return
-    }
-    setAuthError('')
-    const email = authEmail.trim()
-    const password = authPassword
-    if (!email || !password) {
-      setAuthError('Enter email and password.')
-      return
-    }
-    setAuthBusy(true)
+  const syncGroupInUrl = (groupId) => {
+    const url = new URL(window.location.href)
+    if (groupId) url.searchParams.set('group', groupId)
+    else url.searchParams.delete('group')
+    window.history.replaceState({}, '', `${url.pathname}${url.search}`)
+  }
+
+  const openGroup = (g) => {
+    setActiveGroupId(g.id)
+    setGroupRole(g.role)
+    syncGroupInUrl(g.id)
+    setGroupsLoadError('')
+  }
+
+  const backToGroupsDashboard = () => {
+    setActiveGroupId(null)
+    setGroupRole(null)
+    setIsProfileMenuOpen(false)
+    syncGroupInUrl(null)
+  }
+
+  const handleJoinGroup = async () => {
+    const code = joinCodeInput.trim()
+    if (!code || !session?.user || !supabase) return
+    setJoinBusy(true)
+    setGroupsLoadError('')
     try {
-      if (authMode === 'signup') {
-        const { session: newSession } = await signUpWithEmail(email, password)
-        if (!newSession) {
-          setAuthError('Check your email to confirm your account, then sign in.')
-          return
-        }
-      } else {
-        await signInWithEmail(email, password)
-      }
-      setAuthPassword('')
+      const gid = await joinGroupByCode(code)
+      const list = await fetchMyGroups(session.user.id)
+      setMyGroups(list)
+      const row = list.find((x) => x.id === gid)
+      if (row) openGroup(row)
+      else setGroupsLoadError('Joined, but could not open the group. Refresh the page.')
+      setJoinCodeInput('')
     } catch (err) {
-      setAuthError(err.message || 'Authentication failed.')
+      setGroupsLoadError(err.message || 'Could not join that group.')
     } finally {
-      setAuthBusy(false)
+      setJoinBusy(false)
+    }
+  }
+
+  const handleCreateGroup = async () => {
+    const name = newGroupName.trim()
+    if (!name || !session?.user || !supabase) return
+    setCreateGroupBusy(true)
+    setGroupsLoadError('')
+    try {
+      const gid = await createGroup(name)
+      const list = await fetchMyGroups(session.user.id)
+      setMyGroups(list)
+      const row = list.find((x) => x.id === gid)
+      if (row) openGroup(row)
+      else setGroupsLoadError('Created, but could not open the group. Refresh the page.')
+      setNewGroupName('')
+      setCreateGroupModalOpen(false)
+    } catch (err) {
+      setGroupsLoadError(err.message || 'Could not create that group.')
+    } finally {
+      setCreateGroupBusy(false)
     }
   }
 
   const handleSignOut = async () => {
-    setAuthError('')
     try {
+      setIsProfileMenuOpen(false)
+      setIsUserSettingsModalOpen(false)
       await authSignOut()
+      const url = new URL(window.location.href)
+      url.searchParams.delete('group')
+      window.history.replaceState({}, '', `${url.pathname}${url.search}`)
+      navigate('/login', { replace: true })
     } catch (err) {
-      setAuthError(err.message || 'Sign out failed.')
+      console.error('[Auth] Sign out failed:', err)
     }
+  }
+
+  const handleOpenUserSettings = () => {
+    setIsProfileMenuOpen(false)
+    setIsUserSettingsModalOpen(true)
   }
 
   useEffect(() => {
@@ -524,12 +853,36 @@ function App() {
     }
     // Intentionally depends only on gamemode; teamAssignments/lockedParticipants are read for init logic only.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- avoid reset loops when assignments update
-  }, [selectedGamemode])
+  }, [selectedGamemode, activeGroupId, groupRole])
+
+  useEffect(() => {
+    if (!isProfileMenuOpen) return
+
+    const handlePointerDown = (event) => {
+      const target = event.target
+      if (profileMenuRef.current?.contains(target)) return
+      if (profileMenuButtonRef.current?.contains(target)) return
+      setIsProfileMenuOpen(false)
+    }
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setIsProfileMenuOpen(false)
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [isProfileMenuOpen])
 
   useEffect(() => {
     const isAnyModalOpen =
       isSettingsModalOpen ||
+      isUserSettingsModalOpen ||
       isTeamSettingsModalOpen ||
+      createGroupModalOpen ||
       !!loadoutSelector ||
       !!removeConfirmation
 
@@ -541,7 +894,7 @@ function App() {
     return () => {
       document.body.style.overflow = previousOverflow
     }
-  }, [isSettingsModalOpen, isTeamSettingsModalOpen, loadoutSelector, removeConfirmation])
+  }, [isSettingsModalOpen, isUserSettingsModalOpen, isTeamSettingsModalOpen, createGroupModalOpen, loadoutSelector, removeConfirmation])
 
   useEffect(() => {
     setPlayerOverrides(prev => {
@@ -587,7 +940,7 @@ function App() {
     }
   }, [keepSeparateA, keepSeparateB, participants])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const panelEl = teamsPanelRef.current
     if (!panelEl) return
 
@@ -603,7 +956,9 @@ function App() {
     }
 
     updateOrientation()
-    const timeoutId = setTimeout(updateOrientation, 0)
+    const raf1 = requestAnimationFrame(updateOrientation)
+    const raf2 = requestAnimationFrame(() => requestAnimationFrame(updateOrientation))
+    const timeoutId = setTimeout(updateOrientation, 120)
 
     let observer = null
     if (typeof ResizeObserver !== 'undefined') {
@@ -613,18 +968,13 @@ function App() {
 
     window.addEventListener('resize', updateOrientation)
     return () => {
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
       clearTimeout(timeoutId)
       if (observer) observer.disconnect()
       window.removeEventListener('resize', updateOrientation)
     }
-  }, [selectedGamemode])
-
-  const handleAddParticipant = () => {
-    if (newParticipant.trim() && !participants.includes(newParticipant.trim())) {
-      setParticipants([...participants, newParticipant.trim()])
-      setNewParticipant('')
-    }
-  }
+  }, [selectedGamemode, activeGroupId, groupRole, isSidebarCollapsed, isSidebarOverlayMode])
 
   const handleAddKeepSeparatePair = () => {
     if (!keepSeparateA || !keepSeparateB || keepSeparateA === keepSeparateB) return
@@ -648,32 +998,6 @@ function App() {
 
   const handleRemoveKeepSeparatePair = (id) => {
     setKeepSeparatePairs((prev) => prev.filter((pair) => pair.id !== id))
-  }
-
-  const handleRemoveParticipant = (name) => {
-    setParticipants(participants.filter(p => p !== name))
-    // Remove from team assignments
-    const updatedAssignments = { ...teamAssignments }
-    Object.keys(updatedAssignments).forEach(teamIndex => {
-      updatedAssignments[teamIndex] = updatedAssignments[teamIndex].filter(p => p !== name)
-    })
-    setTeamAssignments(updatedAssignments)
-    // Remove lock
-    const updatedLocks = { ...lockedParticipants }
-    delete updatedLocks[name]
-    setLockedParticipants(updatedLocks)
-    // Remove loadout
-    const updatedLoadouts = { ...loadouts }
-    delete updatedLoadouts[name]
-    setLoadouts(updatedLoadouts)
-    // Remove locked loadout
-    const updatedLockedLoadouts = { ...lockedLoadouts }
-    delete updatedLockedLoadouts[name]
-    setLockedLoadouts(updatedLockedLoadouts)
-    // Remove excluded items
-    const updatedExcludedItems = { ...excludedItems }
-    delete updatedExcludedItems[name]
-    setExcludedItems(updatedExcludedItems)
   }
 
   const handleAssignToTeam = (participant, teamIndex) => {
@@ -722,9 +1046,6 @@ function App() {
     const updatedAssignments = { ...teamAssignments }
     updatedAssignments[teamIndex] = updatedAssignments[teamIndex].filter(p => p !== participant)
     setTeamAssignments(updatedAssignments)
-    // Also remove from participants list completely (don't send back to list)
-    setParticipants(participants.filter(p => p !== participant))
-    // Also remove their loadout and locked loadouts
     const newLoadouts = { ...loadouts }
     delete newLoadouts[participant]
     setLoadouts(newLoadouts)
@@ -2010,81 +2331,232 @@ function App() {
     []
   )
 
-  if (!authReady) {
+  if (!groupsInitialised) {
     return (
       <div className="access-gate-page">
         <div className="access-gate-card">
           <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">Loading…</p>
+          <p className="access-gate-help">Loading your groups…</p>
         </div>
       </div>
     )
   }
 
-  if (!session) {
+  if (!activeGroupId) {
     return (
-      <div className="access-gate-page">
-        <div className="access-gate-card">
-          <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">
-            {authMode === 'signin' ? 'Sign in with your email.' : 'Create an account (viewer by default).'}
-          </p>
-          <input
-            type="email"
-            value={authEmail}
-            onChange={(e) => {
-              setAuthEmail(e.target.value)
-              if (authError) setAuthError('')
-            }}
-            placeholder="Email"
-            className="access-auth-input"
-            autoComplete="email"
-            autoFocus
-          />
-          <input
-            type="password"
-            value={authPassword}
-            onChange={(e) => {
-              setAuthPassword(e.target.value)
-              if (authError) setAuthError('')
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                handleAuthSubmit()
-              }
-            }}
-            placeholder="Password"
-            className="access-auth-input access-auth-password"
-            autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'}
-          />
-          {authError && <p className="access-modal-error">{authError}</p>}
-          <div className="access-modal-actions access-auth-actions">
-            <button className="randomize-btn" type="button" onClick={handleAuthSubmit} disabled={authBusy}>
-              {authMode === 'signin' ? 'Sign in' : 'Sign up'}
-            </button>
+      <div className="groups-dashboard-page">
+        <aside className="groups-dashboard-sidebar">
+          <div className="groups-dashboard-sidebar-logo" aria-label="The Finals Customs">
+            <span className="groups-dashboard-sidebar-logo-line1">The Finals</span>
+            <span className="groups-dashboard-sidebar-logo-line2">Customs</span>
+          </div>
+          <div className="groups-dashboard-join">
+            <label className="groups-dashboard-label" htmlFor="join-code-input">
+              Join with code
+            </label>
+            <input
+              id="join-code-input"
+              type="text"
+              value={joinCodeInput}
+              onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+              placeholder="Enter join code"
+              className="access-auth-input groups-dashboard-join-input"
+              autoCapitalize="characters"
+            />
             <button
               type="button"
-              className="access-mode-toggle-btn"
-              onClick={() => {
-                setAuthMode((m) => (m === 'signin' ? 'signup' : 'signin'))
-                setAuthError('')
-              }}
+              className="randomize-btn groups-dashboard-join-btn"
+              onClick={handleJoinGroup}
+              disabled={joinBusy || !joinCodeInput.trim()}
             >
-              {authMode === 'signin' ? 'Need an account? Sign up' : 'Have an account? Sign in'}
+              {joinBusy ? 'Joining…' : 'Join group'}
             </button>
           </div>
-        </div>
+          <div className="groups-dashboard-settings-placeholder">
+            <p className="groups-dashboard-settings-title">Settings</p>
+            <p className="groups-dashboard-settings-hint">Group and account settings will live here.</p>
+          </div>
+          <div className="groups-dashboard-sidebar-footer">
+            <div className="profile-menu-wrap profile-menu-wrap-sidebar">
+              <button
+                ref={profileMenuButtonRef}
+                type="button"
+                className="groups-dashboard-profile-button"
+                onClick={() => setIsProfileMenuOpen((prev) => !prev)}
+                title="Open profile menu"
+                aria-label="Open profile menu"
+                aria-haspopup="menu"
+                aria-expanded={isProfileMenuOpen}
+              >
+                <img className="profile-avatar-img" src={profileAvatarUrl} alt={`${profileDisplayName} profile`} />
+              </button>
+              {isProfileMenuOpen && (
+                <div
+                  ref={profileMenuRef}
+                  className="profile-menu-dropdown profile-menu-dropdown-sidebar"
+                  role="menu"
+                >
+                  <button
+                    type="button"
+                    className="profile-menu-item"
+                    onClick={handleOpenUserSettings}
+                    role="menuitem"
+                  >
+                    User settings
+                  </button>
+                  <button
+                    type="button"
+                    className="profile-menu-item profile-menu-item-danger"
+                    onClick={handleSignOut}
+                    role="menuitem"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="groups-dashboard-profile-meta">
+              <span className="groups-dashboard-profile-name">{profileDisplayName}</span>
+              {session?.user?.email && <span className="groups-dashboard-profile-email">{session.user.email}</span>}
+            </div>
+          </div>
+        </aside>
+        <main className="groups-dashboard-main">
+          <h1 className="groups-dashboard-main-title">Dashboard</h1>
+          {groupsLoadError && <p className="access-modal-error">{groupsLoadError}</p>}
+          <p className="groups-dashboard-main-help">
+            Open a group below, create a new one, or join with a code from the sidebar.
+          </p>
+          {createGroupModalOpen && (
+            <div
+              className="modal-overlay"
+              role="presentation"
+              onClick={() => {
+                if (!createGroupBusy) {
+                  setCreateGroupModalOpen(false)
+                  setNewGroupName('')
+                }
+              }}
+            >
+              <div
+                className="modal-content groups-dashboard-create-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="create-group-modal-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="modal-body">
+                  <h2 id="create-group-modal-title" className="groups-dashboard-create-modal-title">
+                    Create group
+                  </h2>
+                  <label htmlFor="create-group-name-input" className="groups-dashboard-create-modal-label">
+                    Group name
+                  </label>
+                  <input
+                    id="create-group-name-input"
+                    type="text"
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder="Enter group name"
+                    className="access-auth-input groups-dashboard-create-name-input"
+                    disabled={createGroupBusy}
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleCreateGroup()
+                    }}
+                  />
+                  <div className="groups-dashboard-create-modal-actions">
+                    <button
+                      type="button"
+                      className="groups-dashboard-create-cancel-btn"
+                      onClick={() => {
+                        setCreateGroupModalOpen(false)
+                        setNewGroupName('')
+                      }}
+                      disabled={createGroupBusy}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="randomize-btn groups-dashboard-create-submit-btn"
+                      onClick={handleCreateGroup}
+                      disabled={createGroupBusy || !newGroupName.trim()}
+                    >
+                      {createGroupBusy ? 'Creating…' : 'Create'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="groups-dashboard-tile-grid">
+            <button
+              type="button"
+              className="groups-dashboard-create-tile"
+              onClick={() => setCreateGroupModalOpen(true)}
+              aria-label="Create group"
+            >
+              <span className="groups-dashboard-create-tile-plus" aria-hidden={true}>
+                +
+              </span>
+            </button>
+            {myGroups.map((g) => {
+              const memberCount = g.member_count ?? 0
+              const overflow =
+                memberCount > DASHBOARD_MEMBER_CHIP_PREVIEW
+                  ? memberCount - DASHBOARD_MEMBER_CHIP_PREVIEW
+                  : 0
+              return (
+                <button
+                  key={g.id}
+                  type="button"
+                  className="groups-dashboard-group-tile"
+                  onClick={() => openGroup(g)}
+                >
+                  <div
+                    className="groups-dashboard-group-tile-banner"
+                    style={groupDashboardBannerStyle(g.id)}
+                    aria-hidden={true}
+                  />
+                  <div className="groups-dashboard-group-tile-body">
+                    {(g.member_preview_user_ids?.length > 0 || overflow > 0) && (
+                      <div className="groups-dashboard-member-chips" aria-hidden={true}>
+                        {(g.member_preview_user_ids || []).map((uid, idx) => (
+                          <span
+                            key={uid}
+                            className="groups-dashboard-member-chip"
+                            style={{
+                              background: memberChipColor(uid),
+                              zIndex: DASHBOARD_MEMBER_CHIP_PREVIEW - idx
+                            }}
+                          />
+                        ))}
+                        {overflow > 0 && (
+                          <span className="groups-dashboard-member-overflow">+{overflow}</span>
+                        )}
+                      </div>
+                    )}
+                    <span className="groups-dashboard-group-tile-name">{g.name}</span>
+                    <span className="groups-dashboard-group-tile-meta">
+                      {g.join_code} · {g.role}
+                    </span>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </main>
       </div>
     )
   }
 
-  if (userRole === null) {
+  if (!groupRole) {
     return (
       <div className="access-gate-page">
         <div className="access-gate-card">
           <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">Loading your access…</p>
+          <p className="access-gate-help">Loading group…</p>
         </div>
       </div>
     )
@@ -2093,10 +2565,22 @@ function App() {
   return (
     <div className={`App ${isViewOnlyMode ? 'is-view-only' : ''}`}>
       <header className="App-header">
+        <div className="top-left-controls">
+          <button
+            type="button"
+            className="dashboard-nav-link"
+            onClick={backToGroupsDashboard}
+            title="Back to dashboard"
+            aria-label="Back to dashboard"
+          >
+            <ChevronLeftIcon />
+            <span>Dashboard</span>
+          </button>
+        </div>
         <h1 className="app-title">The Finals Customs</h1>
         {/* Top Right Controls */}
         <div className="top-right-controls">
-          {!isViewOnlyMode && selectedGamemode && participants.length > 0 && (
+          {!isViewOnlyMode && (
             <button 
               className="randomize-all-btn" 
               onClick={handleRandomizeAll}
@@ -2108,22 +2592,62 @@ function App() {
           {!isViewOnlyMode && (
             <button
               className="top-right-settings-btn"
-              onClick={() => setIsSettingsModalOpen(true)}
+              onClick={() => {
+                setIsProfileMenuOpen(false)
+                setIsSettingsModalOpen(true)
+              }}
               title="Open settings"
               aria-label="Open settings"
             >
               <SettingsIcon />
             </button>
           )}
-          <button
-            type="button"
-            className="sign-out-btn"
-            onClick={handleSignOut}
-            title="Sign out"
-            aria-label="Sign out"
-          >
-            Sign out
-          </button>
+          <div className="profile-menu-wrap">
+            <button
+              ref={profileMenuButtonRef}
+              type="button"
+              className="profile-menu-trigger"
+              onClick={() => setIsProfileMenuOpen((prev) => !prev)}
+              title="Open profile menu"
+              aria-label="Open profile menu"
+              aria-haspopup="menu"
+              aria-expanded={isProfileMenuOpen}
+            >
+              <img className="profile-avatar-img" src={profileAvatarUrl} alt={`${profileDisplayName} profile`} />
+            </button>
+            {isProfileMenuOpen && (
+              <div ref={profileMenuRef} className="profile-menu-dropdown" role="menu">
+                <div className="profile-menu-user">
+                  <span className="profile-menu-name">{profileDisplayName}</span>
+                  {session?.user?.email && <span className="profile-menu-email">{session.user.email}</span>}
+                </div>
+                <button
+                  type="button"
+                  className="profile-menu-item"
+                  onClick={backToGroupsDashboard}
+                  role="menuitem"
+                >
+                  Dashboard
+                </button>
+                <button
+                  type="button"
+                  className="profile-menu-item"
+                  onClick={handleOpenUserSettings}
+                  role="menuitem"
+                >
+                  User settings
+                </button>
+                <button
+                  type="button"
+                  className="profile-menu-item profile-menu-item-danger"
+                  onClick={handleSignOut}
+                  role="menuitem"
+                >
+                  Sign out
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -2419,29 +2943,24 @@ function App() {
                   <SettingsIcon />
                 </button>
               </div>
-              <div className="add-participant">
-                <input
-                  type="text"
-                  value={newParticipant}
-                  onChange={(e) => setNewParticipant(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleAddParticipant()}
-                  placeholder="Enter participant name"
-                />
-                <button onClick={handleAddParticipant}>Add</button>
-              </div>
               <div className="participants-list">
-                {participants.length === 0 ? (
-                  <p className="empty-state">No participants added yet</p>
+                {groupMembersError ? (
+                  <p className="empty-state">{groupMembersError}</p>
+                ) : !groupMembersReady ? (
+                  <p className="empty-state">Loading group members…</p>
+                ) : participants.length === 0 ? (
+                  <p className="empty-state">
+                    No one is in this group yet. Share the join code from the group list so teammates can join.
+                  </p>
                 ) : (() => {
                   const assignedParticipants = Object.values(teamAssignments).flat()
                   const unassignedParticipants = participants.filter(name => !assignedParticipants.includes(name))
                   return unassignedParticipants.length === 0 ? (
-                    <p className="empty-state">All participants assigned to teams</p>
+                    <p className="empty-state">All members assigned to teams</p>
                   ) : (
-                    unassignedParticipants.map(name => (
-                      <div key={name} className="participant-item">
-                        <span>{name}</span>
-                        <button onClick={() => handleRemoveParticipant(name)}>×</button>
+                    unassignedParticipants.map((id) => (
+                      <div key={id} className="participant-item">
+                        <span>{labelForParticipant(id)}</span>
                       </div>
                     ))
                   )
@@ -2506,18 +3025,18 @@ function App() {
                             }}
                             title={
                               assignedPlayer
-                                ? `${assignedPlayer}${lockedParticipants[assignedPlayer] === teamIndex ? ' (locked)' : ''}`
+                                ? `${labelForParticipant(assignedPlayer)}${lockedParticipants[assignedPlayer] === teamIndex ? ' (locked)' : ''}`
                                 : isViewOnlyMode
                                   ? 'View mode'
                                   : unassignedParticipants.length > 0
-                                    ? `Click to assign ${unassignedParticipants[0]}`
-                                    : 'No available participants'
+                                    ? `Click to assign ${labelForParticipant(unassignedParticipants[0])}`
+                                    : 'No available members'
                             }
                           >
                             {assignedPlayer ? (
                               <div className="player-slot-content">
                                 <div className="player-name-row">
-                                  <span className="player-name">{assignedPlayer}</span>
+                                  <span className="player-name">{labelForParticipant(assignedPlayer)}</span>
                                   {!isViewOnlyMode && (
                                   <div className="player-actions">
                                     <button
@@ -2564,7 +3083,11 @@ function App() {
                                         handleSendBackToParticipants(assignedPlayer, teamIndex)
                                       }}
                                       disabled={lockedParticipants[assignedPlayer] === teamIndex}
-                                      title={lockedParticipants[assignedPlayer] === teamIndex ? 'Unlock player to send back' : `Send ${assignedPlayer} back to participants`}
+                                      title={
+                                        lockedParticipants[assignedPlayer] === teamIndex
+                                          ? 'Unlock player to send back'
+                                          : `Send ${labelForParticipant(assignedPlayer)} back to the pool`
+                                      }
                                     >
                                       <MinusIcon />
                                     </button>
@@ -2575,7 +3098,11 @@ function App() {
                                         handleRemoveFromTeamClick(assignedPlayer, teamIndex)
                                       }}
                                       disabled={lockedParticipants[assignedPlayer] === teamIndex}
-                                      title={lockedParticipants[assignedPlayer] === teamIndex ? 'Unlock player to remove' : `Remove ${assignedPlayer} from team`}
+                                      title={
+                                        lockedParticipants[assignedPlayer] === teamIndex
+                                          ? 'Unlock player to remove'
+                                          : `Remove ${labelForParticipant(assignedPlayer)} from this team`
+                                      }
                                     >
                                       <RemoveIcon />
                                     </button>
@@ -2815,14 +3342,14 @@ function App() {
                         <p>Assign:</p>
                         {participants
                           .filter(p => !Object.values(teamAssignments).flat().includes(p))
-                          .map(name => (
+                          .map((id) => (
                             <button
-                              key={name}
+                              key={id}
                               className="assign-btn"
-                              onClick={() => handleAssignToTeam(name, teamIndex)}
+                              onClick={() => handleAssignToTeam(id, teamIndex)}
                               disabled={teamAssignments[teamIndex]?.length >= modeConfig.players_per_team}
                             >
-                              {name}
+                              {labelForParticipant(id)}
                             </button>
                           ))}
                       </div>
@@ -2836,6 +3363,22 @@ function App() {
           </section>
         </div>
       </main>
+
+      {isUserSettingsModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsUserSettingsModalOpen(false)}>
+          <div className="modal-content user-settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>User settings</h2>
+              <button className="modal-close-btn" onClick={() => setIsUserSettingsModalOpen(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p className="groups-dashboard-settings-hint">
+                User profile and preferences will live here.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Settings Modal */}
       {isSettingsModalOpen && (
@@ -2864,15 +3407,16 @@ function App() {
                 onChange={(e) => handleSettingsTargetChange(e.target.value)}
               >
                 <option value={SETTINGS_ALL_PLAYERS}>Default</option>
-                {participants.map((name) => {
-                  const hasOverride = !!playerOverrides[name]
+                {participants.map((id) => {
+                  const hasOverride = !!playerOverrides[id]
+                  const label = labelForParticipant(id)
                   return (
                     <option
-                      key={name}
-                      value={name}
+                      key={id}
+                      value={id}
                       style={hasOverride ? undefined : { color: '#8b8b8b' }}
                     >
-                      {hasOverride ? `${name}` : `${name} (not added)`}
+                      {hasOverride ? label : `${label} (default weights)`}
                     </option>
                   )
                 })}
@@ -3219,9 +3763,9 @@ function App() {
                     onChange={(e) => setKeepSeparateA(e.target.value)}
                     disabled={participants.length < 2}
                   >
-                    {participants.map((name) => (
-                      <option key={`a-${name}`} value={name}>
-                        {name}
+                    {participants.map((id) => (
+                      <option key={`a-${id}`} value={id}>
+                        {labelForParticipant(id)}
                       </option>
                     ))}
                   </select>
@@ -3231,10 +3775,10 @@ function App() {
                     disabled={participants.length < 2}
                   >
                     {participants
-                      .filter((name) => name !== keepSeparateA)
-                      .map((name) => (
-                        <option key={`b-${name}`} value={name}>
-                          {name}
+                      .filter((id) => id !== keepSeparateA)
+                      .map((id) => (
+                        <option key={`b-${id}`} value={id}>
+                          {labelForParticipant(id)}
                         </option>
                       ))}
                   </select>
@@ -3252,7 +3796,9 @@ function App() {
                   ) : (
                     keepSeparatePairs.map((pair) => (
                       <div key={pair.id} className="participant-item">
-                        <span>{pair.playerA} vs {pair.playerB}</span>
+                        <span>
+                          {labelForParticipant(pair.playerA)} vs {labelForParticipant(pair.playerB)}
+                        </span>
                         <button onClick={() => handleRemoveKeepSeparatePair(pair.id)}>×</button>
                       </div>
                     ))
@@ -3502,8 +4048,14 @@ function App() {
               <button className="modal-close-btn" onClick={() => setRemoveConfirmation(null)}>×</button>
             </div>
             <div className="modal-body">
-              <p>Are you sure you want to remove <strong>{removeConfirmation.participant}</strong> from team {removeConfirmation.teamIndex + 1}?</p>
-              <p style={{ color: '#aaa', fontSize: '0.9em', marginTop: '1rem' }}>This will permanently remove the player from the game and cannot be undone.</p>
+              <p>
+                Are you sure you want to remove{' '}
+                <strong>{labelForParticipant(removeConfirmation.participant)}</strong> from team{' '}
+                {removeConfirmation.teamIndex + 1}?
+              </p>
+              <p style={{ color: '#aaa', fontSize: '0.9em', marginTop: '1rem' }}>
+                They stay in the group; this only clears their slot, loadout, locks, and exclusions for this session.
+              </p>
               <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', justifyContent: 'flex-end' }}>
                 <button 
                   className="randomize-btn" 
