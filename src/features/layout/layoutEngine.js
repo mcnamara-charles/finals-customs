@@ -1,5 +1,6 @@
 const LAYOUT_REM_IN_PX = 16
 const MOBILE_LAYOUT_BREAKPOINT_PX = 800
+const COMPACT_LAYOUT_BREAKPOINT_PX = 1268
 
 const DYNAMIC_LAYOUT_METRICS = {
   panelPaddingX: 3 * LAYOUT_REM_IN_PX,
@@ -77,9 +78,8 @@ export const computeDynamicLayout = ({
 }) => {
   if (!panelWidth || !panelHeight || !teams || !playersPerTeam) return null
   const isMobileLayout = Number.isFinite(viewportWidth) && viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX
-  const isCompactLayout = Number.isFinite(viewportWidth) && viewportWidth <= 1268
+  const isCompactLayout = Number.isFinite(viewportWidth) && viewportWidth <= COMPACT_LAYOUT_BREAKPOINT_PX
   const loadoutGridCandidates = isMobileLayout ? [{ rows: 2, cols: 3 }] : LOADOUT_GRID_CANDIDATES
-  const effectiveLabelHeight = DYNAMIC_LAYOUT_METRICS.labelHeight
   const effectiveTeamHeaderReserve =
     Number.isFinite(teamHeaderReserve) && teamHeaderReserve > 0
       ? teamHeaderReserve
@@ -109,7 +109,9 @@ export const computeDynamicLayout = ({
   const teamCandidates = (
     isMobileLayout ? [{ rows: Math.max(1, teams), cols: 1 }] : getTeamGridCandidates(teams)
   ).filter(({ rows, cols }) => rows * cols >= teams)
-  const playerCandidates = getPlayerGridCandidates(playersPerTeam).filter(({ rows, cols }) => rows * cols >= playersPerTeam)
+  const playerCandidates = getPlayerGridCandidates(playersPerTeam).filter(
+    ({ rows, cols }) => rows * cols >= playersPerTeam
+  )
   let best = null
 
   for (const teamGrid of teamCandidates) {
@@ -160,7 +162,7 @@ export const computeDynamicLayout = ({
         const heightLimited =
           (slotLoadoutHeight -
             (loadoutGrid.rows - 1) * DYNAMIC_LAYOUT_METRICS.loadoutGap -
-            loadoutGrid.rows * effectiveLabelHeight) /
+            loadoutGrid.rows * DYNAMIC_LAYOUT_METRICS.labelHeight) /
           loadoutGrid.rows
 
         const itemSize = Math.floor(
@@ -175,7 +177,7 @@ export const computeDynamicLayout = ({
         const usedLoadoutHeight =
           loadoutGrid.rows * itemSize +
           (loadoutGrid.rows - 1) * DYNAMIC_LAYOUT_METRICS.loadoutGap +
-          loadoutGrid.rows * effectiveLabelHeight
+          loadoutGrid.rows * DYNAMIC_LAYOUT_METRICS.labelHeight
 
         const slackW = Math.max(0, slotLoadoutWidth - usedLoadoutWidth)
         const slackH = Math.max(0, slotLoadoutHeight - usedLoadoutHeight)
@@ -212,7 +214,7 @@ export const computeDynamicLayout = ({
             teamGrid,
             playerGrid,
             loadoutGrid,
-            labelHeight: effectiveLabelHeight,
+            labelHeight: DYNAMIC_LAYOUT_METRICS.labelHeight,
             slotRequiredWidth,
             slotRequiredHeight,
             playerGridWidth,
