@@ -1,7 +1,7 @@
 -- Loadout persistence table (must run before user_roles_and_loadout_rls).
 create extension if not exists pgcrypto;
 
-create table public.loadout_states (
+create table if not exists public.loadout_states (
   id uuid not null default gen_random_uuid (),
   state_version text not null default '1.0.0'::text,
   app_state jsonb not null,
