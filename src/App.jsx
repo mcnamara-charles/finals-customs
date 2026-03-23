@@ -4,7 +4,17 @@ import './App.css'
 import './layouts.css'
 import gameConfig from '../game-config.json'
 import mapsConfig from '../maps-config.json'
-import { computeDynamicLayout } from './layoutEngine'
+import { computeDynamicLayout } from './features/layout/layoutEngine'
+import { isDynamicLayoutModeConfig } from './features/layout/dynamicMode'
+import {
+  applyTeamDragDrop,
+  firstEmptySlotIndex,
+  parseTeamDragTransfer,
+  previewTeamDragDrop,
+  removeParticipantFromAssignments,
+  setTeamDragTransferData
+} from './features/teamDragDrop/engine'
+import DynamicLayoutRoot from './components/DynamicLayout/DynamicLayoutRoot'
 import { supabase } from './lib/supabaseClient'
 import { subscribeToGroupLoadoutChanges, subscribeToGroupMembershipChanges } from './api/realtime'
 import {
@@ -64,13 +74,6 @@ const UnlockIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
     <path d="M7 11V7a5 5 0 0 1 9.9-1"></path>
-  </svg>
-)
-
-const RemoveIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="18" y1="6" x2="6" y2="18"></line>
-    <line x1="6" y1="6" x2="18" y2="18"></line>
   </svg>
 )
 
@@ -240,7 +243,6 @@ function App() {
   const [loadouts, setLoadouts] = useState({}) // { participantName: { class, specialization, weapon, gadgets: [] } }
   const [lockedLoadouts, setLockedLoadouts] = useState({}) // { participantName: { class: true/false, specialization: true/false, weapon: true/false, gadgets: [true/false] } }
   const [loadoutSelector, setLoadoutSelector] = useState(null) // { participant, type, index } or null
-  const [removeConfirmation, setRemoveConfirmation] = useState(null) // { participant, teamIndex } or null
   const [excludedItems, setExcludedItems] = useState({}) // { participantName: { class: [], specialization: { _global: [], light: [], medium: [], heavy: [] }, weapon: { _global: [], light: [], medium: [], heavy: [] }, gadget: { _global: [], light: [], medium: [], heavy: [] } } }
   const [classInputs, setClassInputs] = useState({})
   const [classEnabled, setClassEnabled] = useState({})
@@ -260,6 +262,8 @@ function App() {
     playerNameRowHeight: null,
     assignOptionsReserve: null
   })
+  const [lastStableDynamicLayout, setLastStableDynamicLayout] = useState(null)
+  const [layoutRefreshNonce, setLayoutRefreshNonce] = useState(0)
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false)
   const isInitialLoad = useRef(true)
   const skipNextPersistRef = useRef(false)
@@ -268,7 +272,30 @@ function App() {
   const teamsPanelRef = useRef(null)
   const profileMenuButtonRef = useRef(null)
   const profileMenuRef = useRef(null)
+  const teamDnDRef = useRef(null)
+  const [teamDnD, setTeamDnD] = useState(null)
+  const [teamDnDHover, setTeamDnDHover] = useState(null)
+  const [participantsDropHover, setParticipantsDropHover] = useState(false)
   const isViewOnlyMode = groupRole === 'member'
+
+  const endTeamDnD = useCallback(() => {
+    teamDnDRef.current = null
+    setTeamDnD(null)
+    setTeamDnDHover(null)
+    setParticipantsDropHover(false)
+  }, [])
+
+  const beginTeamDrag = useCallback((e, payload) => {
+    teamDnDRef.current = payload
+    setTeamDnD(payload)
+    setTeamDragTransferData(e.dataTransfer, payload)
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener('dragend', endTeamDnD)
+    return () => window.removeEventListener('dragend', endTeamDnD)
+  }, [endTeamDnD])
+
   const profileDisplayName = useMemo(() => {
     const first = (session?.user?.user_metadata?.first_name || '').trim()
     const last = (session?.user?.user_metadata?.last_name || '').trim()
@@ -732,7 +759,6 @@ function App() {
     setIsUserSettingsModalOpen(false)
     setIsTeamSettingsModalOpen(false)
     setLoadoutSelector(null)
-    setRemoveConfirmation(null)
   }, [isViewOnlyMode])
 
   const syncGroupInUrl = (groupId) => {
@@ -883,8 +909,7 @@ function App() {
       isUserSettingsModalOpen ||
       isTeamSettingsModalOpen ||
       createGroupModalOpen ||
-      !!loadoutSelector ||
-      !!removeConfirmation
+      !!loadoutSelector
 
     if (!isAnyModalOpen) return
 
@@ -894,7 +919,7 @@ function App() {
     return () => {
       document.body.style.overflow = previousOverflow
     }
-  }, [isSettingsModalOpen, isUserSettingsModalOpen, isTeamSettingsModalOpen, createGroupModalOpen, loadoutSelector, removeConfirmation])
+  }, [isSettingsModalOpen, isUserSettingsModalOpen, isTeamSettingsModalOpen, createGroupModalOpen, loadoutSelector])
 
   useEffect(() => {
     setPlayerOverrides(prev => {
@@ -943,6 +968,9 @@ function App() {
   useLayoutEffect(() => {
     const panelEl = teamsPanelRef.current
     if (!panelEl) return
+    let retryTimerId = null
+    let zeroMeasureRetries = 0
+    const MAX_ZERO_MEASURE_RETRIES = 8
 
     const updateOrientation = () => {
       const rect = panelEl.getBoundingClientRect()
@@ -953,6 +981,13 @@ function App() {
       setIsTeamsPanelPortrait(height > width)
       setTeamsPanelWidth(width)
       setTeamsPanelHeight(height)
+      if ((width === 0 || height === 0) && zeroMeasureRetries < MAX_ZERO_MEASURE_RETRIES) {
+        zeroMeasureRetries += 1
+        if (retryTimerId) clearTimeout(retryTimerId)
+        retryTimerId = setTimeout(updateOrientation, 40 * zeroMeasureRetries)
+      } else if (width > 0 && height > 0) {
+        zeroMeasureRetries = 0
+      }
     }
 
     updateOrientation()
@@ -971,10 +1006,20 @@ function App() {
       cancelAnimationFrame(raf1)
       cancelAnimationFrame(raf2)
       clearTimeout(timeoutId)
+      if (retryTimerId) clearTimeout(retryTimerId)
       if (observer) observer.disconnect()
       window.removeEventListener('resize', updateOrientation)
     }
-  }, [selectedGamemode, activeGroupId, groupRole, isSidebarCollapsed, isSidebarOverlayMode])
+  }, [selectedGamemode, activeGroupId, groupRole, isSidebarCollapsed, isSidebarOverlayMode, layoutRefreshNonce])
+
+  useEffect(() => {
+    if (!import.meta.hot) return
+    const onAfterUpdate = () => setLayoutRefreshNonce((prev) => prev + 1)
+    import.meta.hot.on('vite:afterUpdate', onAfterUpdate)
+    return () => {
+      import.meta.hot.off?.('vite:afterUpdate', onAfterUpdate)
+    }
+  }, [])
 
   const handleAddKeepSeparatePair = () => {
     if (!keepSeparateA || !keepSeparateB || keepSeparateA === keepSeparateB) return
@@ -1020,15 +1065,6 @@ function App() {
     setTeamAssignments(updatedAssignments)
   }
 
-  const handleRemoveFromTeamClick = (participant, teamIndex) => {
-    // Don't remove if locked
-    if (lockedParticipants[participant] === teamIndex) {
-      return
-    }
-    // Show confirmation modal
-    setRemoveConfirmation({ participant, teamIndex })
-  }
-
   const handleSendBackToParticipants = (participant, teamIndex) => {
     if (lockedParticipants[participant] === teamIndex) return
     const updatedAssignments = { ...teamAssignments }
@@ -1040,28 +1076,190 @@ function App() {
     setLockedParticipants(updatedLocks)
   }
 
-  const handleConfirmRemove = () => {
-    if (!removeConfirmation) return
-    const { participant, teamIndex } = removeConfirmation
-    const updatedAssignments = { ...teamAssignments }
-    updatedAssignments[teamIndex] = updatedAssignments[teamIndex].filter(p => p !== participant)
-    setTeamAssignments(updatedAssignments)
-    const newLoadouts = { ...loadouts }
-    delete newLoadouts[participant]
-    setLoadouts(newLoadouts)
-    const newLockedLoadouts = { ...lockedLoadouts }
-    delete newLockedLoadouts[participant]
-    setLockedLoadouts(newLockedLoadouts)
-    // Also remove from locked participants
-    const newLockedParticipants = { ...lockedParticipants }
-    delete newLockedParticipants[participant]
-    setLockedParticipants(newLockedParticipants)
-    // Also remove excluded items
-    const newExcludedItems = { ...excludedItems }
-    delete newExcludedItems[participant]
-    setExcludedItems(newExcludedItems)
-    // Close modal
-    setRemoveConfirmation(null)
+  const handleParticipantPoolDragStart = (e, participantId) => {
+    beginTeamDrag(e, { participant: participantId, fromTeam: null, fromSlot: null })
+  }
+
+  const handleTeamPlayerDragStart = (e, participantId, teamIndex, slotIndex) => {
+    if (lockedParticipants[participantId] === teamIndex) {
+      e.preventDefault()
+      return
+    }
+    beginTeamDrag(e, { participant: participantId, fromTeam: teamIndex, fromSlot: slotIndex })
+  }
+
+  const handleTeamSlotDragOver = (e, targetTeamIndex, targetSlotIndex, assignedPlayer) => {
+    if (isViewOnlyMode) return
+    e.preventDefault()
+    const active = teamDnDRef.current
+    if (!active) {
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
+    const mode = selectedGamemode ? gameConfig.gamemodes[selectedGamemode] : null
+    if (!mode) {
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
+    const outcome = previewTeamDragDrop({
+      assignments: teamAssignments,
+      lockedParticipants,
+      participant: active.participant,
+      fromTeam: active.fromTeam,
+      fromSlot: active.fromSlot,
+      targetTeamIndex,
+      targetSlotIndex,
+      targetOccupant: assignedPlayer || null,
+      maxPerTeam: mode.players_per_team
+    })
+    setTeamDnDHover((prev) =>
+      prev?.teamIndex === targetTeamIndex && prev?.slotIndex === targetSlotIndex
+        ? prev
+        : { teamIndex: targetTeamIndex, slotIndex: targetSlotIndex }
+    )
+    e.dataTransfer.dropEffect = outcome === 'invalid' ? 'none' : 'move'
+  }
+
+  const handleTeamSlotDragLeave = (e, targetTeamIndex, targetSlotIndex) => {
+    const nextTarget = e.relatedTarget
+    const slotsRow = e.currentTarget.closest?.('.team-slots')
+    if (nextTarget && slotsRow?.contains(nextTarget)) return
+    setTeamDnDHover((prev) =>
+      prev?.teamIndex === targetTeamIndex && prev?.slotIndex === targetSlotIndex ? null : prev
+    )
+  }
+
+  const handleTeamBlockDragOver = (e, teamIndex) => {
+    if (isViewOnlyMode) return
+    const active = teamDnDRef.current
+    if (!active) return
+    if (e.target.closest?.('.team-slot')) return
+    e.preventDefault()
+    const mode = selectedGamemode ? gameConfig.gamemodes[selectedGamemode] : null
+    if (!mode) {
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
+    const assignForPlace = removeParticipantFromAssignments(teamAssignments, active.participant)
+    const placeIdx = firstEmptySlotIndex(
+      assignForPlace[teamIndex] || [],
+      mode.players_per_team
+    )
+    const outcome =
+      placeIdx < 0
+        ? 'invalid'
+        : previewTeamDragDrop({
+            assignments: teamAssignments,
+            lockedParticipants,
+            participant: active.participant,
+            fromTeam: active.fromTeam,
+            fromSlot: active.fromSlot,
+            targetTeamIndex: teamIndex,
+            targetSlotIndex: placeIdx,
+            targetOccupant: null,
+            maxPerTeam: mode.players_per_team
+          })
+    setTeamDnDHover((prev) =>
+      prev?.teamIndex === teamIndex && prev?.slotIndex == null ? prev : { teamIndex, slotIndex: null }
+    )
+    e.dataTransfer.dropEffect = outcome === 'invalid' ? 'none' : 'move'
+  }
+
+  const handleTeamBlockDragLeave = (e, teamIndex) => {
+    const nextTarget = e.relatedTarget
+    if (nextTarget && e.currentTarget.contains(nextTarget)) return
+    setTeamDnDHover((prev) =>
+      prev?.teamIndex === teamIndex && prev?.slotIndex == null ? null : prev
+    )
+  }
+
+  const handleTeamBlockDrop = (e, teamIndex) => {
+    if (isViewOnlyMode) return
+    if (e.target.closest?.('.team-slot')) return
+    e.preventDefault()
+    e.stopPropagation()
+    endTeamDnD()
+    const mode = selectedGamemode ? gameConfig.gamemodes[selectedGamemode] : null
+    if (!mode) return
+    const parsed = parseTeamDragTransfer(e.dataTransfer)
+    if (!parsed) return
+    const assignForPlace = removeParticipantFromAssignments(teamAssignments, parsed.participant)
+    const placeIdx = firstEmptySlotIndex(
+      assignForPlace[teamIndex] || [],
+      mode.players_per_team
+    )
+    if (placeIdx < 0) return
+    const next = applyTeamDragDrop({
+      assignments: teamAssignments,
+      lockedParticipants,
+      participant: parsed.participant,
+      fromTeam: parsed.fromTeam,
+      fromSlot: parsed.fromSlot,
+      targetTeamIndex: teamIndex,
+      targetSlotIndex: placeIdx,
+      targetOccupant: null,
+      maxPerTeam: mode.players_per_team
+    })
+    if (next) setTeamAssignments(next)
+  }
+
+  const handleTeamSlotDrop = (e, targetTeamIndex, targetSlotIndex, assignedPlayer) => {
+    if (isViewOnlyMode) return
+    e.preventDefault()
+    e.stopPropagation()
+    endTeamDnD()
+    const mode = selectedGamemode ? gameConfig.gamemodes[selectedGamemode] : null
+    if (!mode) return
+    const parsed = parseTeamDragTransfer(e.dataTransfer)
+    if (!parsed) return
+    const next = applyTeamDragDrop({
+      assignments: teamAssignments,
+      lockedParticipants,
+      participant: parsed.participant,
+      fromTeam: parsed.fromTeam,
+      fromSlot: parsed.fromSlot,
+      targetTeamIndex,
+      targetSlotIndex,
+      targetOccupant: assignedPlayer || null,
+      maxPerTeam: mode.players_per_team
+    })
+    if (next) setTeamAssignments(next)
+  }
+
+  const isParticipantsListTeamUnassignDrop = (active) => {
+    if (!active || active.fromTeam == null) return false
+    if (lockedParticipants[active.participant] === active.fromTeam) return false
+    return true
+  }
+
+  const handleParticipantsListDragOver = (e) => {
+    if (isViewOnlyMode) return
+    const active = teamDnDRef.current
+    const valid = isParticipantsListTeamUnassignDrop(active)
+    if (!valid) {
+      e.dataTransfer.dropEffect = 'none'
+      setParticipantsDropHover(false)
+      return
+    }
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setParticipantsDropHover(true)
+  }
+
+  const handleParticipantsListDragLeave = (e) => {
+    const nextTarget = e.relatedTarget
+    if (nextTarget && e.currentTarget.contains(nextTarget)) return
+    setParticipantsDropHover(false)
+  }
+
+  const handleParticipantsListDrop = (e) => {
+    if (isViewOnlyMode) return
+    e.preventDefault()
+    e.stopPropagation()
+    endTeamDnD()
+    const parsed = parseTeamDragTransfer(e.dataTransfer)
+    if (!parsed || parsed.fromTeam == null) return
+    handleSendBackToParticipants(parsed.participant, parsed.fromTeam)
   }
 
   const handleToggleLock = (e, participant, teamIndex) => {
@@ -2157,11 +2355,28 @@ function App() {
   const isTdmFamilyMode =
     normalizedGamemode === 'team_deathmatch' ||
     normalizedGamemode === 'power_shift'
-  const isDynamicLayoutMode =
-    modeConfig?.players_per_team === 3 ||
-    modeConfig?.players_per_team === 5 ||
-    modeConfig?.players_per_team === 8
+  const isDynamicLayoutMode = isDynamicLayoutModeConfig(modeConfig)
   const isTeamDeathmatchMode = isTdmFamilyMode && !isDynamicLayoutMode
+  const participantsListPoolReplacePreview =
+    !isViewOnlyMode &&
+    modeConfig != null &&
+    teamDnD != null &&
+    teamDnD.fromTeam == null &&
+    teamDnDHover != null &&
+    teamDnDHover.teamIndex != null &&
+    teamDnDHover.slotIndex != null &&
+    previewTeamDragDrop({
+      assignments: teamAssignments,
+      lockedParticipants,
+      participant: teamDnD.participant,
+      fromTeam: teamDnD.fromTeam,
+      fromSlot: teamDnD.fromSlot,
+      targetTeamIndex: teamDnDHover.teamIndex,
+      targetSlotIndex: teamDnDHover.slotIndex,
+      targetOccupant:
+        teamAssignments[teamDnDHover.teamIndex]?.[teamDnDHover.slotIndex] || null,
+      maxPerTeam: modeConfig.players_per_team
+    }) === 'replace'
   useEffect(() => {
     if (!isDynamicLayoutMode) {
       setDynamicLayoutRuntimeMetrics({
@@ -2199,11 +2414,13 @@ function App() {
 
     const rafId = requestAnimationFrame(measure)
     return () => cancelAnimationFrame(rafId)
-  }, [isDynamicLayoutMode, teamsPanelWidth, teamsPanelHeight, viewportWidth, effectiveUnassignedParticipantsCount, participants.length, teamAssignments, isViewOnlyMode])
+  }, [isDynamicLayoutMode, teamsPanelWidth, teamsPanelHeight, viewportWidth, effectiveUnassignedParticipantsCount, participants.length, teamAssignments, isViewOnlyMode, layoutRefreshNonce])
 
   const computedDynamicLayout = useMemo(
-    () =>
-      isDynamicLayoutMode
+    () => {
+      // Force recompute after Vite HMR updates in dev.
+      void layoutRefreshNonce
+      return isDynamicLayoutMode
         ? computeDynamicLayout({
             panelWidth: teamsPanelWidth,
             viewportWidth,
@@ -2216,7 +2433,8 @@ function App() {
             playerNameRowHeight: dynamicLayoutRuntimeMetrics.playerNameRowHeight,
             assignOptionsReserve: dynamicLayoutRuntimeMetrics.assignOptionsReserve
           })
-        : null,
+        : null
+    },
     [
       isDynamicLayoutMode,
       teamsPanelWidth,
@@ -2227,40 +2445,52 @@ function App() {
       effectiveUnassignedParticipantsCount,
       dynamicLayoutRuntimeMetrics.teamHeaderReserve,
       dynamicLayoutRuntimeMetrics.playerNameRowHeight,
-      dynamicLayoutRuntimeMetrics.assignOptionsReserve
+      dynamicLayoutRuntimeMetrics.assignOptionsReserve,
+      layoutRefreshNonce
     ]
   )
-  const dynamicLayoutClasses = computedDynamicLayout
+  useEffect(() => {
+    if (!isDynamicLayoutMode) {
+      setLastStableDynamicLayout(null)
+      return
+    }
+    if (computedDynamicLayout) {
+      setLastStableDynamicLayout(computedDynamicLayout)
+    }
+  }, [isDynamicLayoutMode, computedDynamicLayout])
+  const resolvedDynamicLayout =
+    isDynamicLayoutMode ? computedDynamicLayout || lastStableDynamicLayout : null
+  const dynamicLayoutClasses = resolvedDynamicLayout
     ? [
         'is-dynamic-layout',
-        `layout-team-${computedDynamicLayout.teamGrid.rows}x${computedDynamicLayout.teamGrid.cols}`,
-        `layout-player-${computedDynamicLayout.playerGrid.rows}x${computedDynamicLayout.playerGrid.cols}`,
-        `layout-loadout-${computedDynamicLayout.loadoutGrid.rows}x${computedDynamicLayout.loadoutGrid.cols}`
+        `layout-team-${resolvedDynamicLayout.teamGrid.rows}x${resolvedDynamicLayout.teamGrid.cols}`,
+        `layout-player-${resolvedDynamicLayout.playerGrid.rows}x${resolvedDynamicLayout.playerGrid.cols}`,
+        `layout-loadout-${resolvedDynamicLayout.loadoutGrid.rows}x${resolvedDynamicLayout.loadoutGrid.cols}`
       ]
     : []
-  const dynamicLayoutLabelBaseFontSize = computedDynamicLayout
-    ? Math.max(14, Math.min(22, Math.round(computedDynamicLayout.itemSize * 0.16)))
+  const dynamicLayoutLabelBaseFontSize = resolvedDynamicLayout
+    ? Math.max(14, Math.min(22, Math.round(resolvedDynamicLayout.itemSize * 0.16)))
     : null
   const dynamicLayoutLabelMediumFontSize =
     dynamicLayoutLabelBaseFontSize !== null ? Math.max(13, dynamicLayoutLabelBaseFontSize - 1) : null
   const dynamicLayoutLabelLongFontSize =
     dynamicLayoutLabelBaseFontSize !== null ? Math.max(12, dynamicLayoutLabelBaseFontSize - 2) : null
-  const dynamicLayoutStyle = computedDynamicLayout
+  const dynamicLayoutStyle = resolvedDynamicLayout
     ? {
-        '--layout-team-rows': `${computedDynamicLayout.teamGrid.rows}`,
-        '--layout-team-cols': `${computedDynamicLayout.teamGrid.cols}`,
-        '--layout-player-rows': `${computedDynamicLayout.playerGrid.rows}`,
-        '--layout-player-cols': `${computedDynamicLayout.playerGrid.cols}`,
-        '--layout-loadout-rows': `${computedDynamicLayout.loadoutGrid.rows}`,
-        '--layout-loadout-cols': `${computedDynamicLayout.loadoutGrid.cols}`,
-        '--layout-item-size': `${computedDynamicLayout.itemSize}px`,
-        '--layout-label-height': `${computedDynamicLayout.labelHeight}px`,
-        '--layout-slot-width': `${Math.ceil(computedDynamicLayout.slotRequiredWidth)}px`,
-        '--layout-slot-height': `${Math.ceil(computedDynamicLayout.slotRequiredHeight)}px`,
-        '--layout-player-grid-width': `${Math.ceil(computedDynamicLayout.playerGridWidth)}px`,
-        '--layout-player-grid-height': `${Math.ceil(computedDynamicLayout.playerGridHeight)}px`,
-        '--layout-team-block-width': `${Math.ceil(computedDynamicLayout.teamBlockWidth)}px`,
-        '--layout-team-block-height': `${Math.ceil(computedDynamicLayout.teamBlockHeight)}px`,
+        '--layout-team-rows': `${resolvedDynamicLayout.teamGrid.rows}`,
+        '--layout-team-cols': `${resolvedDynamicLayout.teamGrid.cols}`,
+        '--layout-player-rows': `${resolvedDynamicLayout.playerGrid.rows}`,
+        '--layout-player-cols': `${resolvedDynamicLayout.playerGrid.cols}`,
+        '--layout-loadout-rows': `${resolvedDynamicLayout.loadoutGrid.rows}`,
+        '--layout-loadout-cols': `${resolvedDynamicLayout.loadoutGrid.cols}`,
+        '--layout-item-size': `${resolvedDynamicLayout.itemSize}px`,
+        '--layout-label-height': `${resolvedDynamicLayout.labelHeight}px`,
+        '--layout-slot-width': `${Math.ceil(resolvedDynamicLayout.slotRequiredWidth)}px`,
+        '--layout-slot-height': `${Math.ceil(resolvedDynamicLayout.slotRequiredHeight)}px`,
+        '--layout-player-grid-width': `${Math.ceil(resolvedDynamicLayout.playerGridWidth)}px`,
+        '--layout-player-grid-height': `${Math.ceil(resolvedDynamicLayout.playerGridHeight)}px`,
+        '--layout-team-block-width': `${Math.ceil(resolvedDynamicLayout.teamBlockWidth)}px`,
+        '--layout-team-block-height': `${Math.ceil(resolvedDynamicLayout.teamBlockHeight)}px`,
         '--layout-label-font-size': `${dynamicLayoutLabelBaseFontSize}px`,
         '--layout-label-font-size-medium': `${dynamicLayoutLabelMediumFontSize}px`,
         '--layout-label-font-size-long': `${dynamicLayoutLabelLongFontSize}px`
@@ -2943,7 +3173,19 @@ function App() {
                   <SettingsIcon />
                 </button>
               </div>
-              <div className="participants-list">
+              <div
+                className={[
+                  'participants-list',
+                  (participantsDropHover || participantsListPoolReplacePreview) &&
+                    'participants-list--drop-target',
+                  participantsListPoolReplacePreview && 'participants-list--drop-target--replace'
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                onDragOver={handleParticipantsListDragOver}
+                onDragLeave={handleParticipantsListDragLeave}
+                onDrop={handleParticipantsListDrop}
+              >
                 {groupMembersError ? (
                   <p className="empty-state">{groupMembersError}</p>
                 ) : !groupMembersReady ? (
@@ -2959,7 +3201,13 @@ function App() {
                     <p className="empty-state">All members assigned to teams</p>
                   ) : (
                     unassignedParticipants.map((id) => (
-                      <div key={id} className="participant-item">
+                      <div
+                        key={id}
+                        className="participant-item"
+                        draggable={!isViewOnlyMode}
+                        onDragStart={(e) => handleParticipantPoolDragStart(e, id)}
+                        onDragEnd={endTeamDnD}
+                      >
                         <span>{labelForParticipant(id)}</span>
                       </div>
                     ))
@@ -2979,14 +3227,83 @@ function App() {
             {!selectedGamemode ? (
               <p className="empty-state">Select a gamemode to see team structure</p>
             ) : (
-              <div
+              <DynamicLayoutRoot
                 className={teamsContainerClassName}
                 style={dynamicLayoutStyle}
                 data-gamemode={normalizedGamemode || 'none'}
                 data-layout-mode={isTeamDeathmatchMode ? (isTeamsPanelPortrait ? 'portrait' : 'landscape') : 'default'}
               >
-                {modeConfig && Array.from({ length: modeConfig.teams }, (_, teamIndex) => (
-                  <div key={teamIndex} className="team-block">
+                {modeConfig &&
+                  (() => {
+                    const gHoverTeam = teamDnDHover?.teamIndex
+                    const gHoverSlot = teamDnDHover?.slotIndex
+                    const gHoverOccupant =
+                      gHoverTeam != null && gHoverSlot != null && gHoverSlot >= 0
+                        ? teamAssignments[gHoverTeam]?.[gHoverSlot] || null
+                        : null
+                    const gHoverPreview =
+                      teamDnD && gHoverTeam != null && !isViewOnlyMode
+                        ? gHoverSlot == null
+                          ? (() => {
+                              const assignForPlace = removeParticipantFromAssignments(
+                                teamAssignments,
+                                teamDnD.participant
+                              )
+                              const placeIdx = firstEmptySlotIndex(
+                                assignForPlace[gHoverTeam] || [],
+                                modeConfig.players_per_team
+                              )
+                              return placeIdx < 0
+                                ? 'invalid'
+                                : previewTeamDragDrop({
+                                    assignments: teamAssignments,
+                                    lockedParticipants,
+                                    participant: teamDnD.participant,
+                                    fromTeam: teamDnD.fromTeam,
+                                    fromSlot: teamDnD.fromSlot,
+                                    targetTeamIndex: gHoverTeam,
+                                    targetSlotIndex: placeIdx,
+                                    targetOccupant: null,
+                                    maxPerTeam: modeConfig.players_per_team
+                                  })
+                            })()
+                          : previewTeamDragDrop({
+                              assignments: teamAssignments,
+                              lockedParticipants,
+                              participant: teamDnD.participant,
+                              fromTeam: teamDnD.fromTeam,
+                              fromSlot: teamDnD.fromSlot,
+                              targetTeamIndex: gHoverTeam,
+                              targetSlotIndex: gHoverSlot,
+                              targetOccupant: gHoverOccupant,
+                              maxPerTeam: modeConfig.players_per_team
+                            })
+                        : null
+                    const gAssignmentsForSnappedPlace =
+                      teamDnD && gHoverPreview === 'place'
+                        ? removeParticipantFromAssignments(teamAssignments, teamDnD.participant)
+                        : teamAssignments
+                    const gSnappedPlaceSlotIndex =
+                      gHoverPreview === 'place' && gHoverTeam != null
+                        ? firstEmptySlotIndex(
+                            gAssignmentsForSnappedPlace[gHoverTeam] || [],
+                            modeConfig.players_per_team
+                          )
+                        : -1
+                    const slotDropPreviewCls = 'team-slot-drop-preview'
+                    const assignedAcrossTeams = Object.values(teamAssignments).flat()
+                    const unassignedParticipants = participants.filter(
+                      (p) => !assignedAcrossTeams.includes(p)
+                    )
+
+                    return Array.from({ length: modeConfig.teams }, (_, teamIndex) => (
+                  <div
+                    key={teamIndex}
+                    className="team-block"
+                    onDragOver={(e) => handleTeamBlockDragOver(e, teamIndex)}
+                    onDragLeave={(e) => handleTeamBlockDragLeave(e, teamIndex)}
+                    onDrop={(e) => handleTeamBlockDrop(e, teamIndex)}
+                  >
                     <h3>
                       {gameConfig.teams && gameConfig.teams[teamIndex] ? (
                         (() => {
@@ -3011,30 +3328,113 @@ function App() {
                     <div className="team-slots">
                       {Array.from({ length: modeConfig.players_per_team }, (_, slotIndex) => {
                         const assignedPlayer = teamAssignments[teamIndex]?.[slotIndex]
-                        const unassignedParticipants = participants.filter(p => !Object.values(teamAssignments).flat().includes(p))
+                        const isHover =
+                          teamDnDHover?.teamIndex === teamIndex && teamDnDHover?.slotIndex === slotIndex
+                        const isDragSource =
+                          teamDnD &&
+                          teamDnD.fromTeam === teamIndex &&
+                          teamDnD.fromSlot === slotIndex
+                        const dropPreview =
+                          teamDnD && isHover && !isViewOnlyMode ? gHoverPreview : null
+                        const isSameTeamEmptyHover =
+                          teamDnD &&
+                          isHover &&
+                          !assignedPlayer &&
+                          teamDnD.fromTeam != null &&
+                          teamDnD.fromTeam === teamIndex
+                        const isSnappedPlaceSlot =
+                          gHoverPreview === 'place' &&
+                          gHoverTeam === teamIndex &&
+                          gSnappedPlaceSlotIndex === slotIndex
+                        const showPrimaryGhost =
+                          teamDnD &&
+                          !isViewOnlyMode &&
+                          gHoverPreview &&
+                          gHoverPreview !== 'invalid' &&
+                          ((gHoverPreview === 'place' && isSnappedPlaceSlot) ||
+                            ((gHoverPreview === 'swap' || gHoverPreview === 'replace') && isHover))
+                        const showSwapCounterpartGhost =
+                          teamDnD &&
+                          !isViewOnlyMode &&
+                          gHoverPreview === 'swap' &&
+                          teamDnD.fromTeam != null &&
+                          teamIndex === teamDnD.fromTeam &&
+                          slotIndex === teamDnD.fromSlot &&
+                          gHoverOccupant
+                        const previewClass = (() => {
+                          if (isViewOnlyMode || !teamDnD) return ''
+                          if (isSameTeamEmptyHover) return ''
+                          if (isSnappedPlaceSlot) {
+                            return `${slotDropPreviewCls} ${slotDropPreviewCls}--place ${slotDropPreviewCls}--snap`
+                          }
+                          if (dropPreview === 'place') return ''
+                          return dropPreview ? `${slotDropPreviewCls} ${slotDropPreviewCls}--${dropPreview}` : ''
+                        })()
+                        const baseTitle = assignedPlayer
+                          ? `${labelForParticipant(assignedPlayer)}${lockedParticipants[assignedPlayer] === teamIndex ? ' (locked)' : ''}`
+                          : isViewOnlyMode
+                            ? 'View mode'
+                            : unassignedParticipants.length > 0
+                              ? 'Empty slot — drag a member from the pool'
+                              : 'No available members'
+                        const dragTitle =
+                          !isViewOnlyMode && teamDnD && isHover && dropPreview
+                            ? isSameTeamEmptyHover
+                              ? ''
+                              : dropPreview === 'place'
+                              ? isSnappedPlaceSlot
+                                ? ' — Adds to first open slot on this team.'
+                                : ''
+                              : dropPreview === 'swap'
+                                ? ' — Swap both players.'
+                                : dropPreview === 'replace'
+                                  ? ' — Replace; freed player returns to the pool.'
+                                  : ' — Cannot drop here.'
+                            : ''
                         return (
                           <div
                             key={slotIndex}
-                            className={`team-slot ${assignedPlayer ? 'filled' : 'empty'} ${lockedParticipants[assignedPlayer] === teamIndex ? 'locked' : ''}`}
-                            onClick={() => {
-                              if (isViewOnlyMode) return
-                              // Only allow clicking to assign when slot is empty
-                              if (!assignedPlayer && unassignedParticipants.length > 0) {
-                                handleAssignToTeam(unassignedParticipants[0], teamIndex)
-                              }
-                            }}
-                            title={
-                              assignedPlayer
-                                ? `${labelForParticipant(assignedPlayer)}${lockedParticipants[assignedPlayer] === teamIndex ? ' (locked)' : ''}`
-                                : isViewOnlyMode
-                                  ? 'View mode'
-                                  : unassignedParticipants.length > 0
-                                    ? `Click to assign ${labelForParticipant(unassignedParticipants[0])}`
-                                    : 'No available members'
+                            className={`team-slot ${assignedPlayer ? 'filled' : 'empty'} ${lockedParticipants[assignedPlayer] === teamIndex ? 'locked' : ''} ${isDragSource ? 'team-slot--drag-source' : ''} ${previewClass}`.trim()}
+                            onDragOver={(e) =>
+                              handleTeamSlotDragOver(e, teamIndex, slotIndex, assignedPlayer || null)
                             }
+                            onDragLeave={(e) => handleTeamSlotDragLeave(e, teamIndex, slotIndex)}
+                            onDrop={(e) =>
+                              handleTeamSlotDrop(e, teamIndex, slotIndex, assignedPlayer || null)
+                            }
+                            title={`${baseTitle}${dragTitle}`}
                           >
+                            {showPrimaryGhost ? (
+                              <div
+                                className="team-slot-dnd-ghost team-slot-dnd-ghost--primary"
+                                aria-hidden
+                              >
+                                <span className="team-slot-dnd-ghost-name">
+                                  {labelForParticipant(teamDnD.participant)}
+                                </span>
+                              </div>
+                            ) : null}
+                            {showSwapCounterpartGhost ? (
+                              <div
+                                className="team-slot-dnd-ghost team-slot-dnd-ghost--swap-counterpart"
+                                aria-hidden
+                              >
+                                <span className="team-slot-dnd-ghost-name">
+                                  {labelForParticipant(gHoverOccupant)}
+                                </span>
+                              </div>
+                            ) : null}
                             {assignedPlayer ? (
-                              <div className="player-slot-content">
+                              <div
+                                className={`player-slot-content ${
+                                  lockedParticipants[assignedPlayer] !== teamIndex ? 'player-draggable-source' : ''
+                                }`}
+                                draggable={!isViewOnlyMode && lockedParticipants[assignedPlayer] !== teamIndex}
+                                onDragStart={(e) =>
+                                  handleTeamPlayerDragStart(e, assignedPlayer, teamIndex, slotIndex)
+                                }
+                                onDragEnd={endTeamDnD}
+                              >
                                 <div className="player-name-row">
                                   <span className="player-name">{labelForParticipant(assignedPlayer)}</span>
                                   {!isViewOnlyMode && (
@@ -3090,21 +3490,6 @@ function App() {
                                       }
                                     >
                                       <MinusIcon />
-                                    </button>
-                                    <button
-                                      className="remove-player-btn"
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        handleRemoveFromTeamClick(assignedPlayer, teamIndex)
-                                      }}
-                                      disabled={lockedParticipants[assignedPlayer] === teamIndex}
-                                      title={
-                                        lockedParticipants[assignedPlayer] === teamIndex
-                                          ? 'Unlock player to remove'
-                                          : `Remove ${labelForParticipant(assignedPlayer)} from this team`
-                                      }
-                                    >
-                                      <RemoveIcon />
                                     </button>
                                   </div>
                                   )}
@@ -3355,8 +3740,8 @@ function App() {
                       </div>
                     )}
                   </div>
-                ))}
-              </div>
+                )); })()}
+              </DynamicLayoutRoot>
             )}
           </div>
           </div>
@@ -4039,42 +4424,6 @@ function App() {
         </div>
       )}
 
-      {/* Remove Player Confirmation Modal */}
-      {removeConfirmation && (
-        <div className="modal-overlay" onClick={() => setRemoveConfirmation(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Remove Player</h2>
-              <button className="modal-close-btn" onClick={() => setRemoveConfirmation(null)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p>
-                Are you sure you want to remove{' '}
-                <strong>{labelForParticipant(removeConfirmation.participant)}</strong> from team{' '}
-                {removeConfirmation.teamIndex + 1}?
-              </p>
-              <p style={{ color: '#aaa', fontSize: '0.9em', marginTop: '1rem' }}>
-                They stay in the group; this only clears their slot, loadout, locks, and exclusions for this session.
-              </p>
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', justifyContent: 'flex-end' }}>
-                <button 
-                  className="randomize-btn" 
-                  onClick={() => setRemoveConfirmation(null)}
-                  style={{ background: '#555' }}
-                >
-                  Cancel
-                </button>
-                <button 
-                  className="randomize-btn clear-btn" 
-                  onClick={handleConfirmRemove}
-                >
-                  Remove Player
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

@@ -10,3 +10,4 @@ Default workflow for non-trivial tasks:
 
 Do not skip verification.
 Do not claim a task is done unless verification has passed or failures are explicitly reported.
+Run tasks in sequential order, never in parallel

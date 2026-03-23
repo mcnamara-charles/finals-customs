@@ -738,6 +738,18 @@ h1 {
   min-height: 200px;
 }
 
+.participants-list.participants-list--drop-target {
+  transition: box-shadow 0.12s ease, background-color 0.12s ease;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.45), 0 0 18px rgba(45, 212, 191, 0.2);
+  background-color: rgba(45, 212, 191, 0.08);
+}
+
+.participants-list.participants-list--drop-target.participants-list--drop-target--replace {
+  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.5), 0 0 18px rgba(249, 115, 22, 0.22);
+  background-color: rgba(249, 115, 22, 0.1);
+}
+
 .participant-item {
   display: flex;
   justify-content: space-between;
@@ -746,6 +758,16 @@ h1 {
   background-color: #242424;
   border-radius: 8px;
   color: #fff;
+}
+
+.participant-item[draggable='true'],
+.player-slot-content.player-draggable-source {
+  cursor: grab;
+}
+
+.participant-item[draggable='true']:active,
+.player-slot-content.player-draggable-source:active {
+  cursor: grabbing;
 }
 
 .participant-item span {
@@ -849,12 +871,12 @@ h1 {
 }
 
 .team-slot {
+  position: relative;
   padding: 0.75rem;
   background-color: #1a1a1a;
   border-radius: 6px;
   border: 2px solid #444;
   color: #fff;
-  cursor: pointer;
   transition: all 0.25s;
   width: 480px;
   height: 435px;
@@ -866,6 +888,52 @@ h1 {
   min-width: 0;
 }
 
+.team-slot-dnd-ghost {
+  position: absolute;
+  inset: 0.5rem 0.35rem;
+  z-index: 6;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 0.65rem 0.45rem 0.5rem;
+  border-radius: 6px;
+  pointer-events: none;
+  box-sizing: border-box;
+  background: rgba(26, 26, 26, 0.82);
+  backdrop-filter: blur(4px);
+}
+
+.team-slot-dnd-ghost--primary {
+  border: 2px dashed rgba(45, 212, 191, 0.85);
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.25), inset 0 0 20px rgba(45, 212, 191, 0.08);
+}
+
+.team-slot-dnd-ghost--swap-counterpart {
+  border: 2px dashed rgba(249, 115, 22, 0.9);
+  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.3), inset 0 0 20px rgba(249, 115, 22, 0.08);
+}
+
+.team-slot-dnd-ghost-name {
+  font-family: 'Saira Extra Condensed', sans-serif;
+  font-style: italic !important;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+  font-weight: 600;
+  font-size: 1.45em;
+  text-transform: uppercase;
+  color: #f0fdf9;
+  text-align: center;
+  line-height: 1.15;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-slot-dnd-ghost--swap-counterpart .team-slot-dnd-ghost-name {
+  color: #ffedd5;
+}
+
 .team-slot.empty {
   align-items: center;
   justify-content: center;
@@ -874,6 +942,53 @@ h1 {
 .team-slot.locked {
   border-color: #ffa500;
   background-color: #2a241a;
+}
+
+.team-slot.team-slot--drag-source {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+.team-slot.team-slot-drop-preview {
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+}
+
+.team-slot.team-slot-drop-preview--place {
+  border-color: #2dd4bf;
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.45), 0 0 18px rgba(45, 212, 191, 0.2);
+  background-color: rgba(45, 212, 191, 0.06);
+}
+
+.team-slot.team-slot-drop-preview--place-pending {
+  border-color: rgba(45, 212, 191, 0.55);
+  box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.28), inset 0 0 0 1px rgba(45, 212, 191, 0.18);
+}
+
+.team-slot.team-slot-drop-preview--snap {
+  transform: translateY(-1px);
+}
+
+.team-slot.team-slot-drop-preview--swap {
+  box-shadow: none;
+  background-color: rgba(251, 191, 36, 0.07);
+}
+
+.team-slot.team-slot-drop-preview--replace {
+  border-color: #a78bfa;
+  box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.55), 0 0 18px rgba(167, 139, 250, 0.2);
+  background-color: rgba(167, 139, 250, 0.07);
+}
+
+.team-slot.team-slot-drop-preview--invalid {
+  box-shadow: none;
+  background-color: rgba(248, 113, 113, 0.05);
+  cursor: not-allowed;
+}
+
+.participant-item.participant-item--team-drag-source {
+  opacity: 0.75;
+  outline: 2px dashed rgba(45, 212, 191, 0.55);
+  outline-offset: 2px;
 }
 
 .player-slot-content {
@@ -946,38 +1061,6 @@ h1 {
 }
 
 .player-randomize-btn svg {
-  width: 16px;
-  height: 16px;
-}
-
-.remove-player-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #ff4444;
-  transition: all 0.2s;
-  border-radius: 4px;
-}
-
-.remove-player-btn:hover:not(:disabled) {
-  background-color: rgba(255, 68, 68, 0.2);
-  transform: scale(1.1);
-}
-
-.remove-player-btn:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
-}
-
-.remove-player-btn:disabled:hover {
-  transform: none;
-}
-
-.remove-player-btn svg {
   width: 16px;
   height: 16px;
 }
@@ -1472,7 +1555,7 @@ h1 {
   background-color: #2a2a3a;
 }
 
-.team-slot:hover {
+.team-slot.filled:hover {
   border-color: #646cff;
 }
 
@@ -2523,7 +2606,6 @@ h1 {
   }
 
   .player-randomize-btn,
-  .remove-player-btn,
   .send-back-btn,
   .lock-btn,
   .lock-all-loadout-btn {
@@ -2532,7 +2614,6 @@ h1 {
   }
 
   .player-randomize-btn svg,
-  .remove-player-btn svg,
   .lock-btn svg,
   .lock-all-loadout-btn svg {
     width: 13px;
