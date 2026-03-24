@@ -3,5 +3,10 @@ export {
   fetchRoleInGroup,
   joinGroupByCode,
   createGroup,
-  fetchGroupMembers
+  fetchGroupMembers,
+  upsertGroupMemberManualStatus,
+  setGroupMemberRole,
+  removeGroupMember,
+  GROUP_MANUAL_STATUSES,
+  normalizeGroupManualStatus
 } from '../api/groups.js'
