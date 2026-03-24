@@ -78,10 +78,22 @@ export async function fetchRoleInGroup(userId, groupId) {
   return null
 }
 
+/** @type {readonly ['assigned', 'available', 'unavailable']} */
+export const GROUP_MANUAL_STATUSES = ['assigned', 'available', 'unavailable']
+
+/**
+ * @param {unknown} value
+ * @returns {'assigned'|'available'|'unavailable'}
+ */
+export function normalizeGroupManualStatus(value) {
+  if (value === 'assigned' || value === 'available' || value === 'unavailable') return value
+  return 'available'
+}
+
 /**
  * Active group members from `group_memberships` (RLS applies).
  * @param {string} groupId
- * @returns {Promise<Array<{ user_id: string, role: string, display_name?: string | null, avatar_url?: string | null }>>}
+ * @returns {Promise<Array<{ user_id: string, role: string, display_name?: string | null, avatar_url?: string | null, manual_status: 'assigned'|'available'|'unavailable' }>>}
  */
 export async function fetchGroupMembers(groupId) {
   if (!supabase || !groupId) return []
@@ -96,12 +108,14 @@ export async function fetchGroupMembers(groupId) {
   const userIds = [...new Set(rows.map((row) => row.user_id))]
   if (!userIds.length) return rows
 
-  const { data: profileRows, error: profileError } = await supabase
-    .from('profiles')
-    .select('user_id, display_name, avatar_url')
-    .in('user_id', userIds)
+  const [{ data: profileRows, error: profileError }, { data: availRows, error: availError }] =
+    await Promise.all([
+      supabase.from('profiles').select('user_id, display_name, avatar_url').in('user_id', userIds),
+      supabase.from('group_member_availability').select('user_id, manual_status').eq('group_id', groupId)
+    ])
 
   if (profileError) throw profileError
+  if (availError) throw availError
 
   /** @type {Map<string, { display_name?: string, avatar_url?: string }>} */
   const profileMap = new Map()
@@ -113,10 +127,51 @@ export async function fetchGroupMembers(groupId) {
     })
   }
 
+  /** @type {Map<string, 'assigned'|'available'|'unavailable'>} */
+  const statusMap = new Map()
+  for (const a of availRows || []) {
+    if (!a?.user_id) continue
+    statusMap.set(a.user_id, normalizeGroupManualStatus(a.manual_status))
+  }
+
   return rows.map((row) => ({
     ...row,
-    ...(profileMap.get(row.user_id) || {})
+    ...(profileMap.get(row.user_id) || {}),
+    manual_status: statusMap.get(row.user_id) ?? 'available'
   }))
+}
+
+/**
+ * Upsert manual status for a group member row (RLS enforces owner/admin/self rules).
+ * @param {string} groupId
+ * @param {string} targetUserId
+ * @param {'assigned'|'available'|'unavailable'} manualStatus
+ */
+export async function upsertGroupMemberManualStatus(groupId, targetUserId, manualStatus) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  if (!targetUserId) throw new Error('Missing user id')
+
+  const normalized = normalizeGroupManualStatus(manualStatus)
+  if (normalized !== manualStatus) {
+    throw new Error('Invalid manual status')
+  }
+
+  const {
+    data: { session }
+  } = await supabase.auth.getSession()
+  if (!session?.user?.id) throw new Error('Not authenticated')
+
+  const { error } = await supabase.from('group_member_availability').upsert(
+    {
+      group_id: groupId,
+      user_id: targetUserId,
+      manual_status: normalized,
+      updated_at: new Date().toISOString()
+    },
+    { onConflict: 'group_id,user_id' }
+  )
+  if (error) throw error
 }
 
 /**
@@ -141,4 +196,39 @@ export async function createGroup(name) {
   const { data, error } = await supabase.rpc('create_group', { p_name: name })
   if (error) throw error
   return data
+}
+
+/**
+ * @param {string} groupId
+ * @param {string} userId
+ * @param {'admin'|'member'} role
+ */
+export async function setGroupMemberRole(groupId, userId, role) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  if (!userId) throw new Error('Missing user id')
+  if (role !== 'admin' && role !== 'member') throw new Error('Invalid role')
+
+  const { error } = await supabase.rpc('set_group_member_role', {
+    p_group_id: groupId,
+    p_user_id: userId,
+    p_role: role
+  })
+  if (error) throw error
+}
+
+/**
+ * @param {string} groupId
+ * @param {string} userId
+ */
+export async function removeGroupMember(groupId, userId) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  if (!userId) throw new Error('Missing user id')
+
+  const { error } = await supabase.rpc('remove_group_member', {
+    p_group_id: groupId,
+    p_user_id: userId
+  })
+  if (error) throw error
 }

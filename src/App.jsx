@@ -16,7 +16,11 @@ import {
 } from './features/teamDragDrop/engine'
 import DynamicLayoutRoot from './components/DynamicLayout/DynamicLayoutRoot'
 import { supabase } from './lib/supabaseClient'
-import { subscribeToGroupLoadoutChanges, subscribeToGroupMembershipChanges } from './api/realtime'
+import {
+  subscribeToGroupLoadoutChanges,
+  subscribeToGroupMembershipChanges,
+  subscribeToGroupAvailabilityChanges
+} from './api/realtime'
 import {
   fetchGroupPersistedState,
   saveGroupPersistedState,
@@ -30,7 +34,11 @@ import {
   fetchRoleInGroup,
   joinGroupByCode,
   createGroup,
-  fetchGroupMembers
+  fetchGroupMembers,
+  upsertGroupMemberManualStatus,
+  setGroupMemberRole,
+  removeGroupMember,
+  normalizeGroupManualStatus
 } from './services/groupService'
 
 const STATE_VERSION = '1.0.0'
@@ -74,12 +82,6 @@ const UnlockIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
     <path d="M7 11V7a5 5 0 0 1 9.9-1"></path>
-  </svg>
-)
-
-const MinusIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="5" y1="12" x2="19" y2="12"></line>
   </svg>
 )
 
@@ -138,6 +140,14 @@ const RefreshIcon = () => (
   </svg>
 )
 
+const ParticipantMenuDotsIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="12" cy="5" r="1.75" />
+    <circle cx="12" cy="12" r="1.75" />
+    <circle cx="12" cy="19" r="1.75" />
+  </svg>
+)
+
 const ChevronLeftIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="15 18 9 12 15 6"></polyline>
@@ -175,13 +185,52 @@ function memberChipColor(userId) {
 }
 
 /** @param {Array<{ user_id: string }>} memberRows */
-function sortAndDedupeUserIds(memberRows) {
-  const ids = [...new Set((memberRows || []).map((r) => r.user_id).filter(Boolean))]
-  ids.sort((a, b) => a.localeCompare(b))
-  return ids
+function orderGroupMemberRows(memberRows) {
+  const byId = new Map()
+  for (const r of memberRows || []) {
+    if (!r?.user_id) continue
+    if (!byId.has(r.user_id)) byId.set(r.user_id, r)
+  }
+  return [...byId.values()].sort((a, b) => a.user_id.localeCompare(b.user_id))
+}
+
+/** @param {{ avatar_url?: string | null }} row @param {string} label */
+function participantAvatarSrc(row, label) {
+  const u = row?.avatar_url
+  if (u) return u
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(label || 'Member')}&background=2a2a2a&color=ffffff&size=96&bold=true`
 }
 
 /** @param {Array<{ user_id: string, display_name?: string | null }>} memberRows */
+function canEditGroupManualStatus({ actorRole, actorUserId, targetUserId, targetMembershipRole }) {
+  if (actorUserId === targetUserId) return true
+  if (actorRole === 'owner') return true
+  if (actorRole === 'admin' && targetMembershipRole === 'member') return true
+  return false
+}
+
+/** @param {'owner'|'admin'|'member'|null|undefined} actorRole @param {string} targetMembershipRole */
+function canRemoveGroupMemberFromGroup(actorRole, targetMembershipRole) {
+  if (actorRole === 'owner' && targetMembershipRole !== 'owner') return true
+  if (actorRole === 'admin' && targetMembershipRole === 'member') return true
+  return false
+}
+
+function groupManualStatusLabel(status) {
+  if (status === 'assigned') return 'Assigned'
+  if (status === 'unavailable') return 'Unavailable'
+  return 'Available'
+}
+
+function loadoutHasAnyFilled(lo) {
+  if (!lo) return false
+  if (lo.class) return true
+  if (lo.specialization) return true
+  if (lo.weapon) return true
+  if (Array.isArray(lo.gadgets) && lo.gadgets.some(Boolean)) return true
+  return false
+}
+
 function buildGroupMemberLabelMap(memberRows, sessionUserId, selfDisplayName) {
   const map = {}
   for (const row of memberRows || []) {
@@ -227,9 +276,11 @@ function App() {
   )
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [participants, setParticipants] = useState([])
+  const [groupMemberRoster, setGroupMemberRoster] = useState([])
   const [groupMemberLabels, setGroupMemberLabels] = useState({})
   const [groupMembersReady, setGroupMembersReady] = useState(false)
   const [groupMembersError, setGroupMembersError] = useState('')
+  const [onlineUserIds, setOnlineUserIds] = useState([])
   const [teamAssignments, setTeamAssignments] = useState({})
   const [lockedParticipants, setLockedParticipants] = useState({}) // { participantName: teamIndex }
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
@@ -265,10 +316,19 @@ function App() {
   const [lastStableDynamicLayout, setLastStableDynamicLayout] = useState(null)
   const [layoutRefreshNonce, setLayoutRefreshNonce] = useState(0)
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false)
+  const [participantActionsMenuUserId, setParticipantActionsMenuUserId] = useState(null)
+  const [participantActionsTeamsSubOpen, setParticipantActionsTeamsSubOpen] = useState(false)
+  const [participantActionsMenuPosition, setParticipantActionsMenuPosition] = useState(null)
+  const [assignedSlotMenuKey, setAssignedSlotMenuKey] = useState(null)
+  const [assignedSlotMenuPosition, setAssignedSlotMenuPosition] = useState(null)
+  const [assignedSlotMenuMoveSubOpen, setAssignedSlotMenuMoveSubOpen] = useState(false)
+  const [assignedSlotMenuSwapSubOpen, setAssignedSlotMenuSwapSubOpen] = useState(false)
   const isInitialLoad = useRef(true)
   const skipNextPersistRef = useRef(false)
   const lastGroupPersistedRef = useRef('')
   const lastUserPersistedRef = useRef('')
+  /** Last `activeGroupId` whose persisted-state load finished; reset when the group changes. */
+  const lastLoadedGroupIdRef = useRef(null)
   const teamsPanelRef = useRef(null)
   const profileMenuButtonRef = useRef(null)
   const profileMenuRef = useRef(null)
@@ -276,6 +336,8 @@ function App() {
   const [teamDnD, setTeamDnD] = useState(null)
   const [teamDnDHover, setTeamDnDHover] = useState(null)
   const [participantsDropHover, setParticipantsDropHover] = useState(false)
+  const [linkedParticipantPulseId, setLinkedParticipantPulseId] = useState(null)
+  const linkedParticipantPulseTimeoutRef = useRef(null)
   const isViewOnlyMode = groupRole === 'member'
 
   const endTeamDnD = useCallback(() => {
@@ -283,6 +345,18 @@ function App() {
     setTeamDnD(null)
     setTeamDnDHover(null)
     setParticipantsDropHover(false)
+  }, [])
+
+  const pulseAssignedParticipantInLoadout = useCallback((participantId) => {
+    if (!participantId) return
+    if (linkedParticipantPulseTimeoutRef.current) {
+      clearTimeout(linkedParticipantPulseTimeoutRef.current)
+    }
+    setLinkedParticipantPulseId(participantId)
+    linkedParticipantPulseTimeoutRef.current = setTimeout(() => {
+      setLinkedParticipantPulseId((prev) => (prev === participantId ? null : prev))
+      linkedParticipantPulseTimeoutRef.current = null
+    }, 650)
   }, [])
 
   const beginTeamDrag = useCallback((e, payload) => {
@@ -295,6 +369,15 @@ function App() {
     window.addEventListener('dragend', endTeamDnD)
     return () => window.removeEventListener('dragend', endTeamDnD)
   }, [endTeamDnD])
+
+  useEffect(
+    () => () => {
+      if (linkedParticipantPulseTimeoutRef.current) {
+        clearTimeout(linkedParticipantPulseTimeoutRef.current)
+      }
+    },
+    []
+  )
 
   const profileDisplayName = useMemo(() => {
     const first = (session?.user?.user_metadata?.first_name || '').trim()
@@ -380,6 +463,198 @@ function App() {
       return groupMemberLabels[participantId] || `Member · ${String(participantId).slice(-6)}`
     },
     [session?.user?.id, profileDisplayName, groupMemberLabels]
+  )
+
+  const groupMemberRosterById = useMemo(() => {
+    const m = new Map()
+    for (const row of groupMemberRoster) {
+      if (row?.user_id) m.set(row.user_id, row)
+    }
+    return m
+  }, [groupMemberRoster])
+
+  const isParticipantUnavailableForTeams = useCallback(
+    (userId) => groupMemberRosterById.get(userId)?.manual_status === 'unavailable',
+    [groupMemberRosterById]
+  )
+
+  const handleGroupManualStatusChange = useCallback(
+    async (targetUserId, nextStatus) => {
+      if (!activeGroupId || !session?.user?.id) return
+      const row = groupMemberRoster.find((r) => r.user_id === targetUserId)
+      if (
+        !canEditGroupManualStatus({
+          actorRole: groupRole,
+          actorUserId: session.user.id,
+          targetUserId,
+          targetMembershipRole: row?.role || 'member'
+        })
+      ) {
+        return
+      }
+      const normalized = normalizeGroupManualStatus(nextStatus)
+      setGroupMemberRoster((prev) =>
+        prev.map((r) => (r.user_id === targetUserId ? { ...r, manual_status: normalized } : r))
+      )
+      try {
+        await upsertGroupMemberManualStatus(activeGroupId, targetUserId, normalized)
+      } catch (err) {
+        console.error('[Group] Failed to update manual status:', err)
+        try {
+          const memberRows = await fetchGroupMembers(activeGroupId)
+          setGroupMemberRoster(orderGroupMemberRows(memberRows))
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    },
+    [activeGroupId, session?.user?.id, groupRole, groupMemberRoster]
+  )
+
+  const refreshGroupMemberRoster = useCallback(async () => {
+    if (!activeGroupId) return
+    try {
+      const memberRows = await fetchGroupMembers(activeGroupId)
+      setGroupMemberRoster(orderGroupMemberRows(memberRows))
+    } catch (err) {
+      console.error('[Group] Failed to refresh members:', err)
+    }
+  }, [activeGroupId])
+
+  const handleParticipantMenuSetRole = useCallback(
+    async (userId, role) => {
+      if (!activeGroupId) return
+      try {
+        await setGroupMemberRole(activeGroupId, userId, role)
+        setParticipantActionsMenuUserId(null)
+        setParticipantActionsTeamsSubOpen(false)
+        setParticipantActionsMenuPosition(null)
+        await refreshGroupMemberRoster()
+      } catch (err) {
+        console.error('[Group] Failed to set member role:', err)
+      }
+    },
+    [activeGroupId, refreshGroupMemberRoster]
+  )
+
+  const handleParticipantMenuRemove = useCallback(
+    async (userId) => {
+      if (!activeGroupId) return
+      try {
+        await removeGroupMember(activeGroupId, userId)
+        setParticipantActionsMenuUserId(null)
+        setParticipantActionsTeamsSubOpen(false)
+        setParticipantActionsMenuPosition(null)
+        await refreshGroupMemberRoster()
+      } catch (err) {
+        console.error('[Group] Failed to remove member:', err)
+      }
+    },
+    [activeGroupId, refreshGroupMemberRoster]
+  )
+
+  useEffect(() => {
+    if (participantActionsMenuUserId == null) return
+
+    const handlePointerDown = (event) => {
+      const el = event.target
+      if (
+        typeof el?.closest === 'function' &&
+        el.closest(`[data-participant-actions-wrap="${participantActionsMenuUserId}"]`)
+      ) {
+        return
+      }
+      setParticipantActionsMenuUserId(null)
+      setParticipantActionsTeamsSubOpen(false)
+      setParticipantActionsMenuPosition(null)
+    }
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setParticipantActionsMenuUserId(null)
+        setParticipantActionsTeamsSubOpen(false)
+        setParticipantActionsMenuPosition(null)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [participantActionsMenuUserId])
+
+  const closeAssignedSlotMenu = useCallback(() => {
+    setAssignedSlotMenuKey(null)
+    setAssignedSlotMenuPosition(null)
+    setAssignedSlotMenuMoveSubOpen(false)
+    setAssignedSlotMenuSwapSubOpen(false)
+  }, [])
+
+  useEffect(() => {
+    if (assignedSlotMenuKey == null) return
+
+    const handlePointerDown = (event) => {
+      const el = event.target
+      if (
+        typeof el?.closest === 'function' &&
+        el.closest(`[data-assigned-slot-menu-wrap="${assignedSlotMenuKey}"]`)
+      ) {
+        return
+      }
+      closeAssignedSlotMenu()
+    }
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        closeAssignedSlotMenu()
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [assignedSlotMenuKey, closeAssignedSlotMenu])
+
+  useEffect(() => {
+    const unavailable = new Set(
+      groupMemberRoster.filter((r) => r.manual_status === 'unavailable').map((r) => r.user_id)
+    )
+    if (unavailable.size === 0) return
+
+    setTeamAssignments((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const [k, arr] of Object.entries(next)) {
+        const list = arr || []
+        const filtered = list.filter((p) => !p || !unavailable.has(p))
+        if (filtered.length !== list.length) changed = true
+        next[k] = filtered
+      }
+      return changed ? next : prev
+    })
+    setLockedParticipants((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const p of Object.keys(next)) {
+        if (unavailable.has(p)) {
+          delete next[p]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [groupMemberRoster])
+
+  const onlineUserIdSet = useMemo(() => new Set(onlineUserIds), [onlineUserIds])
+
+  const assignedParticipantIdSet = useMemo(
+    () => new Set(Object.values(teamAssignments).flat().filter(Boolean)),
+    [teamAssignments]
   )
 
   const gamemodes = Object.keys(gameConfig.gamemodes)
@@ -487,14 +762,18 @@ function App() {
     lastUserPersistedRef.current = ''
     setIsSidebarCollapsed(false)
     setParticipants([])
+    setGroupMemberRoster([])
     setGroupMemberLabels({})
     setGroupMembersReady(false)
     setGroupMembersError('')
+    setOnlineUserIds([])
+    lastLoadedGroupIdRef.current = null
   }, [activeGroupId])
 
   // Load persisted state for the active group (RLS requires authentication)
   useEffect(() => {
-    if (!session?.user || !activeGroupId || !groupRole) {
+    const sessionUserId = session?.user?.id
+    if (!sessionUserId || !activeGroupId || !groupRole) {
       isInitialLoad.current = true
       return
     }
@@ -502,18 +781,27 @@ function App() {
     let isCancelled = false
 
     const loadState = async () => {
-      setGroupMembersReady(false)
+      // Same group, new effect run (e.g. groupRole resolved): do not clear members-ready to avoid UI flicker.
+      const isRepeatLoadForSameGroup = lastLoadedGroupIdRef.current === activeGroupId
+      if (!isRepeatLoadForSameGroup) {
+        setGroupMembersReady(false)
+      }
       try {
         const [parsed, userParsed] = await Promise.all([
           fetchGroupPersistedState(activeGroupId),
           fetchUserGroupPersistedState(activeGroupId)
         ])
         let memberIds = null
-        let memberRows = []
+        /** @type {Array<{ user_id: string }> | null} */
+        let orderedMemberRows = null
         try {
-          memberRows = await fetchGroupMembers(activeGroupId)
-          memberIds = sortAndDedupeUserIds(memberRows)
-          if (!isCancelled) setGroupMembersError('')
+          const memberRows = await fetchGroupMembers(activeGroupId)
+          orderedMemberRows = orderGroupMemberRows(memberRows)
+          memberIds = orderedMemberRows.map((r) => r.user_id)
+          if (!isCancelled) {
+            setGroupMemberRoster(orderedMemberRows)
+            setGroupMembersError('')
+          }
         } catch (err) {
           console.error('[Group] Failed to load members:', err)
           if (!isCancelled) {
@@ -522,8 +810,10 @@ function App() {
         }
         if (isCancelled) return
 
-        if (memberIds) {
-          setGroupMemberLabels(buildGroupMemberLabelMap(memberRows, session.user.id, profileDisplayName))
+        if (memberIds && orderedMemberRows) {
+          setGroupMemberLabels(
+            buildGroupMemberLabelMap(orderedMemberRows, sessionUserId, profileDisplayName)
+          )
           setParticipants(memberIds)
         }
 
@@ -559,6 +849,7 @@ function App() {
         if (!isCancelled) {
           isInitialLoad.current = false
           setGroupMembersReady(true)
+          lastLoadedGroupIdRef.current = activeGroupId
         }
       }
     }
@@ -569,7 +860,7 @@ function App() {
       isCancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only affects labels (labelForParticipant); omit to avoid reloading shared state
-  }, [session?.user, activeGroupId, groupRole, pruneInvalidParticipantReferences, applyPersistedState])
+  }, [session?.user?.id, activeGroupId, groupRole, pruneInvalidParticipantReferences, applyPersistedState])
 
   // Save shared state (owners/admins) and per-user prefs for the active group
   useEffect(() => {
@@ -668,8 +959,9 @@ function App() {
   ])
 
   useEffect(() => {
-    if (!supabase || !session?.user || !activeGroupId) return
+    if (!supabase || !session?.user?.id || !activeGroupId) return
 
+    const userId = session.user.id
     let isMounted = true
     const unsubscribe = subscribeToGroupLoadoutChanges(supabase, activeGroupId, async () => {
       if (!isMounted) return
@@ -680,8 +972,10 @@ function App() {
         ])
         if (!isMounted) return
 
-        const memberIds = sortAndDedupeUserIds(memberRows)
-        setGroupMemberLabels(buildGroupMemberLabelMap(memberRows, session.user.id, profileDisplayName))
+        const orderedRows = orderGroupMemberRows(memberRows)
+        const memberIds = orderedRows.map((r) => r.user_id)
+        setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
+        setGroupMemberRoster(orderedRows)
         setParticipants(memberIds)
         pruneInvalidParticipantReferences(memberIds)
 
@@ -704,19 +998,22 @@ function App() {
       unsubscribe()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
-  }, [session?.user, activeGroupId, pruneInvalidParticipantReferences, applyPersistedState])
+  }, [session?.user?.id, activeGroupId, pruneInvalidParticipantReferences, applyPersistedState])
 
   useEffect(() => {
-    if (!supabase || !session?.user || !activeGroupId) return
+    if (!supabase || !session?.user?.id || !activeGroupId) return
 
+    const userId = session.user.id
     let isMounted = true
     const unsubscribe = subscribeToGroupMembershipChanges(supabase, activeGroupId, async () => {
       if (!isMounted) return
       try {
         const memberRows = await fetchGroupMembers(activeGroupId)
         if (!isMounted) return
-        const memberIds = sortAndDedupeUserIds(memberRows)
-        setGroupMemberLabels(buildGroupMemberLabelMap(memberRows, session.user.id, profileDisplayName))
+        const orderedRows = orderGroupMemberRows(memberRows)
+        const memberIds = orderedRows.map((r) => r.user_id)
+        setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
+        setGroupMemberRoster(orderedRows)
         setParticipants(memberIds)
         pruneInvalidParticipantReferences(memberIds)
         setGroupMembersError('')
@@ -731,7 +1028,65 @@ function App() {
       unsubscribe()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
-  }, [session?.user, activeGroupId, pruneInvalidParticipantReferences])
+  }, [session?.user?.id, activeGroupId, pruneInvalidParticipantReferences])
+
+  useEffect(() => {
+    if (!supabase || !session?.user?.id || !activeGroupId) return
+
+    const userId = session.user.id
+    let isMounted = true
+    const unsubscribe = subscribeToGroupAvailabilityChanges(supabase, activeGroupId, async () => {
+      if (!isMounted) return
+      try {
+        const memberRows = await fetchGroupMembers(activeGroupId)
+        if (!isMounted) return
+        const orderedRows = orderGroupMemberRows(memberRows)
+        const memberIds = orderedRows.map((r) => r.user_id)
+        setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
+        setGroupMemberRoster(orderedRows)
+        setParticipants(memberIds)
+      } catch (error) {
+        console.error('[Realtime] Failed to sync availability update:', error)
+      }
+    })
+
+    return () => {
+      isMounted = false
+      unsubscribe()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
+  }, [session?.user?.id, activeGroupId])
+
+  useEffect(() => {
+    if (!supabase || !session?.user?.id || !activeGroupId) {
+      setOnlineUserIds([])
+      return
+    }
+
+    const userId = session.user.id
+    const channel = supabase.channel(`group-presence-${activeGroupId}`, {
+      config: { presence: { key: userId } }
+    })
+
+    const syncOnline = () => {
+      setOnlineUserIds(Object.keys(channel.presenceState()))
+    }
+
+    channel
+      .on('presence', { event: 'sync' }, syncOnline)
+      .on('presence', { event: 'join' }, syncOnline)
+      .on('presence', { event: 'leave' }, syncOnline)
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({ joined_at: new Date().toISOString() })
+        }
+      })
+
+    return () => {
+      setOnlineUserIds([])
+      supabase.removeChannel(channel)
+    }
+  }, [session?.user?.id, activeGroupId])
 
   useEffect(() => {
     const updateSidebarMode = () => {
@@ -974,8 +1329,8 @@ function App() {
 
     const updateOrientation = () => {
       const rect = panelEl.getBoundingClientRect()
-      const measuredWidth = Math.round(rect.width) || panelEl.clientWidth || panelEl.offsetWidth || 0
-      const measuredHeight = Math.round(rect.height) || panelEl.clientHeight || panelEl.offsetHeight || 0
+      const measuredWidth = panelEl.clientWidth || Math.round(rect.width) || panelEl.offsetWidth || 0
+      const measuredHeight = panelEl.clientHeight || Math.round(rect.height) || panelEl.offsetHeight || 0
       const width = Math.max(0, measuredWidth)
       const height = Math.max(0, measuredHeight)
       setIsTeamsPanelPortrait(height > width)
@@ -1046,6 +1401,7 @@ function App() {
   }
 
   const handleAssignToTeam = (participant, teamIndex) => {
+    if (isParticipantUnavailableForTeams(participant)) return
     const mode = gameConfig.gamemodes[selectedGamemode]
     const maxPerTeam = mode.players_per_team
     
@@ -1077,10 +1433,29 @@ function App() {
   }
 
   const handleParticipantPoolDragStart = (e, participantId) => {
+    if (e.target instanceof Element && e.target.closest('.participant-item__actions-wrap')) {
+      e.preventDefault()
+      return
+    }
+    if (isParticipantUnavailableForTeams(participantId)) {
+      e.preventDefault()
+      return
+    }
     beginTeamDrag(e, { participant: participantId, fromTeam: null, fromSlot: null })
   }
 
   const handleTeamPlayerDragStart = (e, participantId, teamIndex, slotIndex) => {
+    if (
+      e.target instanceof Element &&
+      (e.target.closest('.player-actions') || e.target.closest('.assigned-slot-actions-wrap'))
+    ) {
+      e.preventDefault()
+      return
+    }
+    if (isParticipantUnavailableForTeams(participantId)) {
+      e.preventDefault()
+      return
+    }
     if (lockedParticipants[participantId] === teamIndex) {
       e.preventDefault()
       return
@@ -1093,6 +1468,10 @@ function App() {
     e.preventDefault()
     const active = teamDnDRef.current
     if (!active) {
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
+    if (isParticipantUnavailableForTeams(active.participant)) {
       e.dataTransfer.dropEffect = 'none'
       return
     }
@@ -1133,6 +1512,10 @@ function App() {
     if (isViewOnlyMode) return
     const active = teamDnDRef.current
     if (!active) return
+    if (isParticipantUnavailableForTeams(active.participant)) {
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
     if (e.target.closest?.('.team-slot')) return
     e.preventDefault()
     const mode = selectedGamemode ? gameConfig.gamemodes[selectedGamemode] : null
@@ -1183,6 +1566,7 @@ function App() {
     if (!mode) return
     const parsed = parseTeamDragTransfer(e.dataTransfer)
     if (!parsed) return
+    if (isParticipantUnavailableForTeams(parsed.participant)) return
     const assignForPlace = removeParticipantFromAssignments(teamAssignments, parsed.participant)
     const placeIdx = firstEmptySlotIndex(
       assignForPlace[teamIndex] || [],
@@ -1212,6 +1596,7 @@ function App() {
     if (!mode) return
     const parsed = parseTeamDragTransfer(e.dataTransfer)
     if (!parsed) return
+    if (isParticipantUnavailableForTeams(parsed.participant)) return
     const next = applyTeamDragDrop({
       assignments: teamAssignments,
       lockedParticipants,
@@ -1262,17 +1647,16 @@ function App() {
     handleSendBackToParticipants(parsed.participant, parsed.fromTeam)
   }
 
-  const handleToggleLock = (e, participant, teamIndex) => {
-    e.stopPropagation() // Prevent removing from team when clicking lock
-    const updatedLocks = { ...lockedParticipants }
-    if (updatedLocks[participant] === teamIndex) {
-      // Unlock
-      delete updatedLocks[participant]
-    } else {
-      // Lock to this team
-      updatedLocks[participant] = teamIndex
-    }
-    setLockedParticipants(updatedLocks)
+  const toggleParticipantPositionLock = (participant, teamIndex) => {
+    setLockedParticipants((prev) => {
+      const updatedLocks = { ...prev }
+      if (updatedLocks[participant] === teamIndex) {
+        delete updatedLocks[participant]
+      } else {
+        updatedLocks[participant] = teamIndex
+      }
+      return updatedLocks
+    })
   }
 
   // Fisher-Yates shuffle algorithm
@@ -1323,6 +1707,7 @@ function App() {
 
     // First, place locked participants in their current positions
     Object.keys(lockedParticipants).forEach(participant => {
+      if (isParticipantUnavailableForTeams(participant)) return
       const lockedTeamIndex = lockedParticipants[participant]
       if (teamSlotsUsed[lockedTeamIndex] < playersPerTeam) {
         // Find their current slot position to maintain it if possible
@@ -1341,7 +1726,9 @@ function App() {
     })
 
     // Fill null slots (placeholders for locked positions) and collect unlocked participants
-    const unlockedParticipants = participants.filter(p => lockedParticipants[p] === undefined)
+    const unlockedParticipants = participants.filter(
+      (p) => lockedParticipants[p] === undefined && !isParticipantUnavailableForTeams(p)
+    )
     const shuffledUnlocked = shuffleArray(unlockedParticipants)
 
     // Calculate minimum teams needed if fillFirst is enabled
@@ -1517,6 +1904,38 @@ function App() {
     }
     
     setLockedLoadouts(updatedLocks)
+  }
+
+  const handleClearPlayerLoadout = (participant) => {
+    if (!participant) return
+    setLoadouts((prev) => ({
+      ...prev,
+      [participant]: { class: null, specialization: null, weapon: null, gadgets: [null, null, null] }
+    }))
+  }
+
+  const handleSwapPlayerLoadouts = (participantA, participantB) => {
+    if (!participantA || !participantB || participantA === participantB) return
+    const cloneValue = (v) => {
+      if (v === undefined || v === null) return null
+      return typeof structuredClone === 'function' ? structuredClone(v) : JSON.parse(JSON.stringify(v))
+    }
+    setLoadouts((prev) => {
+      const empty = { class: null, specialization: null, weapon: null, gadgets: [null, null, null] }
+      const la = prev[participantA] != null ? cloneValue(prev[participantA]) : { ...empty }
+      const lb = prev[participantB] != null ? cloneValue(prev[participantB]) : { ...empty }
+      return { ...prev, [participantA]: lb, [participantB]: la }
+    })
+    setLockedLoadouts((prev) => {
+      const next = { ...prev }
+      const lockA = prev[participantA]
+      const lockB = prev[participantB]
+      if (lockB === undefined) delete next[participantA]
+      else next[participantA] = cloneValue(lockB)
+      if (lockA === undefined) delete next[participantB]
+      else next[participantB] = cloneValue(lockA)
+      return next
+    })
   }
 
   const handleLoadoutSelect = (item) => {
@@ -2344,8 +2763,12 @@ function App() {
   const selectedMapDetails = getMapDetails(selectedMapId)
   const unassignedParticipantsCount = useMemo(() => {
     const assignedParticipants = new Set(Object.values(teamAssignments).flat().filter(Boolean))
-    return participants.reduce((count, name) => (assignedParticipants.has(name) ? count : count + 1), 0)
-  }, [participants, teamAssignments])
+    return participants.reduce(
+      (count, name) =>
+        assignedParticipants.has(name) || isParticipantUnavailableForTeams(name) ? count : count + 1,
+      0
+    )
+  }, [participants, teamAssignments, isParticipantUnavailableForTeams])
   const effectiveUnassignedParticipantsCount = isViewOnlyMode ? 0 : unassignedParticipantsCount
   const normalizedGamemode = (selectedGamemode || '')
     .toString()
@@ -2361,6 +2784,7 @@ function App() {
     !isViewOnlyMode &&
     modeConfig != null &&
     teamDnD != null &&
+    !isParticipantUnavailableForTeams(teamDnD.participant) &&
     teamDnD.fromTeam == null &&
     teamDnDHover != null &&
     teamDnDHover.teamIndex != null &&
@@ -2485,12 +2909,12 @@ function App() {
         '--layout-loadout-cols': `${resolvedDynamicLayout.loadoutGrid.cols}`,
         '--layout-item-size': `${resolvedDynamicLayout.itemSize}px`,
         '--layout-label-height': `${resolvedDynamicLayout.labelHeight}px`,
-        '--layout-slot-width': `${Math.ceil(resolvedDynamicLayout.slotRequiredWidth)}px`,
-        '--layout-slot-height': `${Math.ceil(resolvedDynamicLayout.slotRequiredHeight)}px`,
-        '--layout-player-grid-width': `${Math.ceil(resolvedDynamicLayout.playerGridWidth)}px`,
-        '--layout-player-grid-height': `${Math.ceil(resolvedDynamicLayout.playerGridHeight)}px`,
-        '--layout-team-block-width': `${Math.ceil(resolvedDynamicLayout.teamBlockWidth)}px`,
-        '--layout-team-block-height': `${Math.ceil(resolvedDynamicLayout.teamBlockHeight)}px`,
+        '--layout-slot-width': `${Math.floor(resolvedDynamicLayout.slotRequiredWidth)}px`,
+        '--layout-slot-height': `${Math.floor(resolvedDynamicLayout.slotRequiredHeight)}px`,
+        '--layout-player-grid-width': `${Math.floor(resolvedDynamicLayout.playerGridWidth)}px`,
+        '--layout-player-grid-height': `${Math.floor(resolvedDynamicLayout.playerGridHeight)}px`,
+        '--layout-team-block-width': `${Math.floor(resolvedDynamicLayout.teamBlockWidth)}px`,
+        '--layout-team-block-height': `${Math.floor(resolvedDynamicLayout.teamBlockHeight)}px`,
         '--layout-label-font-size': `${dynamicLayoutLabelBaseFontSize}px`,
         '--layout-label-font-size-medium': `${dynamicLayoutLabelMediumFontSize}px`,
         '--layout-label-font-size-long': `${dynamicLayoutLabelLongFontSize}px`
@@ -2804,7 +3228,8 @@ function App() {
             aria-label="Back to dashboard"
           >
             <ChevronLeftIcon />
-            <span>Dashboard</span>
+            <span className="dashboard-nav-label dashboard-nav-label--desktop">Dashboard</span>
+            <span className="dashboard-nav-label dashboard-nav-label--mobile">Back</span>
           </button>
         </div>
         <h1 className="app-title">The Finals Customs</h1>
@@ -3185,34 +3610,327 @@ function App() {
                 onDragOver={handleParticipantsListDragOver}
                 onDragLeave={handleParticipantsListDragLeave}
                 onDrop={handleParticipantsListDrop}
+                onScroll={() => {
+                  if (participantActionsMenuUserId != null) {
+                    setParticipantActionsMenuUserId(null)
+                    setParticipantActionsTeamsSubOpen(false)
+                    setParticipantActionsMenuPosition(null)
+                  }
+                }}
               >
                 {groupMembersError ? (
                   <p className="empty-state">{groupMembersError}</p>
-                ) : !groupMembersReady ? (
+                ) : !groupMembersReady &&
+                  participants.length === 0 &&
+                  groupMemberRoster.length === 0 ? (
                   <p className="empty-state">Loading group members…</p>
                 ) : participants.length === 0 ? (
                   <p className="empty-state">
                     No one is in this group yet. Share the join code from the group list so teammates can join.
                   </p>
-                ) : (() => {
-                  const assignedParticipants = Object.values(teamAssignments).flat()
-                  const unassignedParticipants = participants.filter(name => !assignedParticipants.includes(name))
-                  return unassignedParticipants.length === 0 ? (
-                    <p className="empty-state">All members assigned to teams</p>
-                  ) : (
-                    unassignedParticipants.map((id) => (
+                ) : (
+                  participants.map((id) => {
+                    const row = groupMemberRosterById.get(id)
+                    const label = labelForParticipant(id)
+                    const isAssigned = assignedParticipantIdSet.has(id)
+                    const teamBlocked = isParticipantUnavailableForTeams(id)
+                    const draggable = !isViewOnlyMode && !isAssigned && !teamBlocked
+                    const roleRaw = row?.role || 'member'
+                    const roleLabel = roleRaw ? roleRaw.charAt(0).toUpperCase() + roleRaw.slice(1) : ''
+                    const isOnline = onlineUserIdSet.has(id)
+                    const manualStatus = normalizeGroupManualStatus(row?.manual_status)
+                    const availabilityStatus =
+                      manualStatus === 'unavailable' ? 'unavailable' : 'available'
+                    const canEditStatus =
+                      !!session?.user?.id &&
+                      canEditGroupManualStatus({
+                        actorRole: groupRole,
+                        actorUserId: session.user.id,
+                        targetUserId: id,
+                        targetMembershipRole: roleRaw
+                      })
+                    const teamMenuEntries = modeConfig
+                      ? Array.from({ length: modeConfig.teams }, (_, ti) => {
+                          const list = teamAssignments[ti] || []
+                          const isCurrentTeam = list.includes(id)
+                          const isTeamFull = list.length >= modeConfig.players_per_team
+                          const isDisabled = teamBlocked || isCurrentTeam || isTeamFull
+                          return {
+                            teamIndex: ti,
+                            isDisabled
+                          }
+                        })
+                      : []
+                    const showParticipantMakeAdmin = groupRole === 'owner' && roleRaw === 'member'
+                    const showParticipantMakeMember = groupRole === 'owner' && roleRaw === 'admin'
+                    const showParticipantToggleAvail = canEditStatus
+                    const showParticipantRemove = canRemoveGroupMemberFromGroup(groupRole, roleRaw)
+                    const showParticipantAddToTeam = teamMenuEntries.length > 0
+                    const hasParticipantRowMenu =
+                      showParticipantMakeAdmin ||
+                      showParticipantMakeMember ||
+                      showParticipantToggleAvail ||
+                      showParticipantRemove ||
+                      showParticipantAddToTeam
+                    return (
                       <div
                         key={id}
-                        className="participant-item"
-                        draggable={!isViewOnlyMode}
-                        onDragStart={(e) => handleParticipantPoolDragStart(e, id)}
-                        onDragEnd={endTeamDnD}
+                        className={[
+                          'participant-item',
+                          isAssigned && 'participant-item--assigned',
+                          availabilityStatus === 'unavailable' && 'participant-item--unavailable',
+                          participantActionsMenuUserId === id && 'participant-item--menu-open'
+                        ]
+                          .filter(Boolean)
+                          .join(' ')}
+                        draggable={draggable}
+                        onDragStart={draggable ? (e) => handleParticipantPoolDragStart(e, id) : undefined}
+                        onDragEnd={draggable ? endTeamDnD : undefined}
                       >
-                        <span>{labelForParticipant(id)}</span>
+                        <div
+                          className="participant-item__main"
+                          onMouseDown={isAssigned ? () => pulseAssignedParticipantInLoadout(id) : undefined}
+                        >
+                          <div
+                            className={[
+                              'participant-item__avatar-wrap',
+                              isOnline && 'participant-item__avatar-wrap--online'
+                            ]
+                              .filter(Boolean)
+                              .join(' ')}
+                          >
+                            <img
+                              className="participant-item__avatar"
+                              src={participantAvatarSrc(row || {}, label)}
+                              alt=""
+                              draggable={false}
+                            />
+                          </div>
+                          <div className="participant-item__text">
+                            <span className="participant-item__name-row">
+                              <span className="participant-item__name">{label}</span>
+                              {isAssigned ? (
+                                <span
+                                  className="participant-item__assigned-check"
+                                  aria-label={`${label} is assigned`}
+                                  title="Assigned"
+                                >
+                                  ✓
+                                </span>
+                              ) : null}
+                            </span>
+                            <div className="participant-item__badges">
+                              <span className="participant-badge participant-badge--role">{roleLabel}</span>
+                              {canEditStatus && session?.user ? (
+                                <button
+                                  type="button"
+                                  className={[
+                                    'participant-badge',
+                                    'participant-badge--manual-status',
+                                    'participant-manual-status-chip-toggle',
+                                    availabilityStatus === 'available' && 'is-available',
+                                    availabilityStatus === 'unavailable' && 'is-unavailable'
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' ')}
+                                  onClick={() =>
+                                    handleGroupManualStatusChange(
+                                      id,
+                                      availabilityStatus === 'unavailable' ? 'available' : 'unavailable'
+                                    )
+                                  }
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  aria-label={`Toggle availability for ${label}`}
+                                  title={`Set ${label} to ${
+                                    availabilityStatus === 'unavailable' ? 'Available' : 'Unavailable'
+                                  }`}
+                                >
+                                  <span>{groupManualStatusLabel(availabilityStatus)}</span>
+                                  <span
+                                    className="participant-manual-status-chip-toggle__icon"
+                                    aria-hidden="true"
+                                  >
+                                    <RefreshIcon />
+                                  </span>
+                                </button>
+                              ) : (
+                                <span
+                                  className={[
+                                    'participant-badge',
+                                    'participant-badge--manual-status',
+                                    availabilityStatus === 'available' && 'is-available',
+                                    availabilityStatus === 'unavailable' && 'is-unavailable'
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' ')}
+                                >
+                                  {groupManualStatusLabel(availabilityStatus)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        {!isViewOnlyMode && hasParticipantRowMenu ? (
+                          <div
+                            className="participant-item__actions-wrap"
+                            data-participant-actions-wrap={id}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="participant-item__menu-trigger"
+                              aria-haspopup="menu"
+                              aria-expanded={participantActionsMenuUserId === id}
+                              aria-controls={
+                                participantActionsMenuUserId === id
+                                  ? `participant-row-menu-${id}`
+                                  : undefined
+                              }
+                              aria-label={`Actions for ${label}`}
+                              onClick={(e) => {
+                                const triggerRect = e.currentTarget.getBoundingClientRect()
+                                setParticipantActionsMenuUserId((open) => (open === id ? null : id))
+                                setParticipantActionsTeamsSubOpen(false)
+                                if (participantActionsMenuUserId === id) {
+                                  setParticipantActionsMenuPosition(null)
+                                } else {
+                                  setParticipantActionsMenuPosition({
+                                    top: triggerRect.bottom + 4,
+                                    left: triggerRect.right
+                                  })
+                                }
+                              }}
+                            >
+                              <ParticipantMenuDotsIcon />
+                            </button>
+                            {participantActionsMenuUserId === id ? (
+                              <div
+                                className="participant-actions-menu"
+                                id={`participant-row-menu-${id}`}
+                                role="menu"
+                                style={
+                                  participantActionsMenuPosition
+                                    ? {
+                                        position: 'fixed',
+                                        top: `${participantActionsMenuPosition.top}px`,
+                                        left: `${participantActionsMenuPosition.left}px`,
+                                        right: 'auto',
+                                        marginTop: 0,
+                                        transform: 'translateX(-100%)'
+                                      }
+                                    : undefined
+                                }
+                              >
+                                {showParticipantMakeAdmin ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="participant-actions-menu__item"
+                                    onClick={() => handleParticipantMenuSetRole(id, 'admin')}
+                                  >
+                                    Make admin
+                                  </button>
+                                ) : null}
+                                {showParticipantMakeMember ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="participant-actions-menu__item"
+                                    onClick={() => handleParticipantMenuSetRole(id, 'member')}
+                                  >
+                                    Make member
+                                  </button>
+                                ) : null}
+                                {showParticipantToggleAvail ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="participant-actions-menu__item"
+                                    onClick={() => {
+                                      handleGroupManualStatusChange(
+                                        id,
+                                        availabilityStatus === 'unavailable' ? 'available' : 'unavailable'
+                                      )
+                                      setParticipantActionsMenuUserId(null)
+                                      setParticipantActionsTeamsSubOpen(false)
+                                      setParticipantActionsMenuPosition(null)
+                                    }}
+                                  >
+                                    {availabilityStatus === 'unavailable'
+                                      ? 'Set available'
+                                      : 'Set unavailable'}
+                                  </button>
+                                ) : null}
+                                {showParticipantAddToTeam ? (
+                                  <div className="participant-actions-menu__sub-host">
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      className="participant-actions-menu__item participant-actions-menu__item--with-chevron"
+                                      aria-haspopup="true"
+                                      aria-expanded={
+                                        participantActionsTeamsSubOpen &&
+                                        participantActionsMenuUserId === id
+                                      }
+                                      onClick={() => setParticipantActionsTeamsSubOpen((s) => !s)}
+                                    >
+                                      <span>Add to team</span>
+                                      <ChevronRightIcon />
+                                    </button>
+                                    {participantActionsTeamsSubOpen ? (
+                                      <div
+                                        className="participant-actions-menu__sub"
+                                        role="presentation"
+                                      >
+                                        {teamMenuEntries.map((entry) => (
+                                          <button
+                                            key={entry.teamIndex}
+                                            type="button"
+                                            role="menuitem"
+                                            className={[
+                                              'participant-actions-menu__item',
+                                              'participant-actions-menu__sub-item',
+                                              entry.isDisabled && 'is-disabled'
+                                            ]
+                                              .filter(Boolean)
+                                              .join(' ')}
+                                            disabled={entry.isDisabled}
+                                            onClick={() => {
+                                              if (entry.isDisabled) return
+                                              handleAssignToTeam(id, entry.teamIndex)
+                                              setParticipantActionsMenuUserId(null)
+                                              setParticipantActionsTeamsSubOpen(false)
+                                              setParticipantActionsMenuPosition(null)
+                                            }}
+                                          >
+                                            {gameConfig.teams?.[entry.teamIndex]?.name ||
+                                              `Team ${entry.teamIndex + 1}`}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                {showParticipantRemove ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="participant-actions-menu__item participant-actions-menu__item--danger"
+                                    onClick={() => handleParticipantMenuRemove(id)}
+                                  >
+                                    Remove from group
+                                  </button>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
-                    ))
-                  )
-                })()}
+                    )
+                  })
+                )}
               </div>
             </div>
               </>
@@ -3223,7 +3941,13 @@ function App() {
             {/* Main Content Area */}
             <div className="main-content">
           {/* Team Builds Panel */}
-          <div className="teams-panel" ref={teamsPanelRef}>
+          <div
+            className="teams-panel"
+            ref={teamsPanelRef}
+            onScroll={() => {
+              if (assignedSlotMenuKey != null) closeAssignedSlotMenu()
+            }}
+          >
             {!selectedGamemode ? (
               <p className="empty-state">Select a gamemode to see team structure</p>
             ) : (
@@ -3242,7 +3966,10 @@ function App() {
                         ? teamAssignments[gHoverTeam]?.[gHoverSlot] || null
                         : null
                     const gHoverPreview =
-                      teamDnD && gHoverTeam != null && !isViewOnlyMode
+                      teamDnD &&
+                      gHoverTeam != null &&
+                      !isViewOnlyMode &&
+                      !isParticipantUnavailableForTeams(teamDnD.participant)
                         ? gHoverSlot == null
                           ? (() => {
                               const assignForPlace = removeParticipantFromAssignments(
@@ -3293,7 +4020,7 @@ function App() {
                     const slotDropPreviewCls = 'team-slot-drop-preview'
                     const assignedAcrossTeams = Object.values(teamAssignments).flat()
                     const unassignedParticipants = participants.filter(
-                      (p) => !assignedAcrossTeams.includes(p)
+                      (p) => !assignedAcrossTeams.includes(p) && !isParticipantUnavailableForTeams(p)
                     )
 
                     return Array.from({ length: modeConfig.teams }, (_, teamIndex) => (
@@ -3394,7 +4121,7 @@ function App() {
                         return (
                           <div
                             key={slotIndex}
-                            className={`team-slot ${assignedPlayer ? 'filled' : 'empty'} ${lockedParticipants[assignedPlayer] === teamIndex ? 'locked' : ''} ${isDragSource ? 'team-slot--drag-source' : ''} ${previewClass}`.trim()}
+                            className={`team-slot ${assignedPlayer ? 'filled' : 'empty'} ${lockedParticipants[assignedPlayer] === teamIndex ? 'locked' : ''} ${isDragSource ? 'team-slot--drag-source' : ''} ${assignedPlayer === linkedParticipantPulseId ? 'is-linked-participant-pulse' : ''} ${previewClass}`.trim()}
                             onDragOver={(e) =>
                               handleTeamSlotDragOver(e, teamIndex, slotIndex, assignedPlayer || null)
                             }
@@ -3427,9 +4154,16 @@ function App() {
                             {assignedPlayer ? (
                               <div
                                 className={`player-slot-content ${
-                                  lockedParticipants[assignedPlayer] !== teamIndex ? 'player-draggable-source' : ''
+                                  lockedParticipants[assignedPlayer] !== teamIndex &&
+                                  !isParticipantUnavailableForTeams(assignedPlayer)
+                                    ? 'player-draggable-source'
+                                    : ''
                                 }`}
-                                draggable={!isViewOnlyMode && lockedParticipants[assignedPlayer] !== teamIndex}
+                                draggable={
+                                  !isViewOnlyMode &&
+                                  lockedParticipants[assignedPlayer] !== teamIndex &&
+                                  !isParticipantUnavailableForTeams(assignedPlayer)
+                                }
                                 onDragStart={(e) =>
                                   handleTeamPlayerDragStart(e, assignedPlayer, teamIndex, slotIndex)
                                 }
@@ -3437,62 +4171,352 @@ function App() {
                               >
                                 <div className="player-name-row">
                                   <span className="player-name">{labelForParticipant(assignedPlayer)}</span>
-                                  {!isViewOnlyMode && (
-                                  <div className="player-actions">
-                                    <button
-                                      className={`player-randomize-btn ${lockedParticipants[assignedPlayer] === teamIndex ? 'disabled' : ''}`}
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        if (lockedParticipants[assignedPlayer] !== teamIndex) {
-                                          handleRandomizePlayerLoadout(assignedPlayer)
-                                        }
-                                      }}
-                                      disabled={lockedParticipants[assignedPlayer] === teamIndex}
-                                      title={lockedParticipants[assignedPlayer] === teamIndex ? 'Unlock player to randomize loadout' : 'Randomize this player\'s loadout'}
-                                    >
-                                      <DiceIcon />
-                                    </button>
-                                    <button
-                                      className={`lock-all-loadout-btn ${(() => {
-                                        const locks = lockedLoadouts[assignedPlayer] || {}
-                                        const allLocked = locks.class === true && 
-                                                          locks.specialization === true && 
-                                                          locks.weapon === true && 
-                                                          (locks.gadgets?.every(locked => locked === true) || false)
-                                        return allLocked ? 'all-locked' : ''
-                                      })()}`}
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        handleToggleAllLoadoutLocks(assignedPlayer)
-                                      }}
-                                      title="Lock/unlock all loadout items"
-                                    >
-                                      <LockIcon />
-                                    </button>
-                                    <button
-                                      className={`lock-btn ${lockedParticipants[assignedPlayer] === teamIndex ? 'locked' : ''}`}
-                                      onClick={(e) => handleToggleLock(e, assignedPlayer, teamIndex)}
-                                      title={lockedParticipants[assignedPlayer] === teamIndex ? 'Click to unlock' : 'Click to lock'}
-                                    >
-                                      {lockedParticipants[assignedPlayer] === teamIndex ? <LockIcon /> : <UnlockIcon />}
-                                    </button>
-                                    <button
-                                      className="send-back-btn"
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        handleSendBackToParticipants(assignedPlayer, teamIndex)
-                                      }}
-                                      disabled={lockedParticipants[assignedPlayer] === teamIndex}
-                                      title={
+                                  {!isViewOnlyMode &&
+                                    (() => {
+                                      const slotMenuKey = `${teamIndex}-${slotIndex}`
+                                      const rosterRow = groupMemberRosterById.get(assignedPlayer)
+                                      const membershipRole = rosterRow?.role || 'member'
+                                      const canEditAssignedManualStatus =
+                                        !!session?.user?.id &&
+                                        canEditGroupManualStatus({
+                                          actorRole: groupRole,
+                                          actorUserId: session.user.id,
+                                          targetUserId: assignedPlayer,
+                                          targetMembershipRole: membershipRole
+                                        })
+                                      const assignedUnavailable = isParticipantUnavailableForTeams(assignedPlayer)
+                                      const positionLockedHere =
                                         lockedParticipants[assignedPlayer] === teamIndex
-                                          ? 'Unlock player to send back'
-                                          : `Send ${labelForParticipant(assignedPlayer)} back to the pool`
+                                      const moveEntries = Array.from(
+                                        { length: modeConfig.teams },
+                                        (_, ti) => {
+                                          const list = teamAssignments[ti] || []
+                                          const isCurrentTeam = list.includes(assignedPlayer)
+                                          const isTeamFull =
+                                            list.length >= modeConfig.players_per_team
+                                          const isDisabled =
+                                            assignedUnavailable ||
+                                            positionLockedHere ||
+                                            isCurrentTeam ||
+                                            isTeamFull
+                                          return { teamIndex: ti, isDisabled }
+                                        }
+                                      )
+                                      const swapIds = []
+                                      for (const list of Object.values(teamAssignments)) {
+                                        for (const pid of list || []) {
+                                          if (!pid || pid === assignedPlayer) continue
+                                          if (!loadoutHasAnyFilled(loadouts[pid])) continue
+                                          if (!swapIds.includes(pid)) swapIds.push(pid)
+                                        }
                                       }
-                                    >
-                                      <MinusIcon />
-                                    </button>
-                                  </div>
-                                  )}
+                                      swapIds.sort((a, b) =>
+                                        labelForParticipant(a).localeCompare(labelForParticipant(b))
+                                      )
+                                      const hasLoadoutToClear = loadoutHasAnyFilled(
+                                        loadouts[assignedPlayer]
+                                      )
+                                      const allAssignedLoadoutItemsLocked = (() => {
+                                        const locks = lockedLoadouts[assignedPlayer]
+                                        if (!locks) return false
+                                        const gadgetsLocked =
+                                          Array.isArray(locks.gadgets) &&
+                                          locks.gadgets.length === 3 &&
+                                          locks.gadgets.every(Boolean)
+                                        return !!(
+                                          locks.class &&
+                                          locks.specialization &&
+                                          locks.weapon &&
+                                          gadgetsLocked
+                                        )
+                                      })()
+                                      const menuOpen = assignedSlotMenuKey === slotMenuKey
+
+                                      return (
+                                        <div className="player-name-row__actions">
+                                          <div className="player-actions">
+                                            <button
+                                              className={`player-randomize-btn ${positionLockedHere ? 'disabled' : ''}`}
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                if (!positionLockedHere) {
+                                                  handleRandomizePlayerLoadout(assignedPlayer)
+                                                }
+                                              }}
+                                              disabled={positionLockedHere}
+                                              title={
+                                                positionLockedHere
+                                                  ? 'Unlock player to randomize loadout'
+                                                  : "Randomize this player's loadout"
+                                              }
+                                            >
+                                              <DiceIcon />
+                                            </button>
+                                          </div>
+                                          <div
+                                            className="assigned-slot-actions-wrap"
+                                            data-assigned-slot-menu-wrap={slotMenuKey}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            onPointerDown={(e) => e.stopPropagation()}
+                                          >
+                                            <button
+                                              type="button"
+                                              className="participant-item__menu-trigger"
+                                              aria-haspopup="menu"
+                                              aria-expanded={menuOpen}
+                                              aria-controls={
+                                                menuOpen
+                                                  ? `assigned-slot-menu-${slotMenuKey}`
+                                                  : undefined
+                                              }
+                                              aria-label={`Actions for ${labelForParticipant(assignedPlayer)}`}
+                                              onClick={(e) => {
+                                                const triggerRect =
+                                                  e.currentTarget.getBoundingClientRect()
+                                                setAssignedSlotMenuKey((open) =>
+                                                  open === slotMenuKey ? null : slotMenuKey
+                                                )
+                                                setAssignedSlotMenuMoveSubOpen(false)
+                                                setAssignedSlotMenuSwapSubOpen(false)
+                                                if (assignedSlotMenuKey === slotMenuKey) {
+                                                  setAssignedSlotMenuPosition(null)
+                                                } else {
+                                                  setAssignedSlotMenuPosition({
+                                                    top: triggerRect.bottom + 4,
+                                                    left: triggerRect.right
+                                                  })
+                                                }
+                                              }}
+                                            >
+                                              <ParticipantMenuDotsIcon />
+                                            </button>
+                                            {menuOpen ? (
+                                              <div
+                                                className="participant-actions-menu"
+                                                id={`assigned-slot-menu-${slotMenuKey}`}
+                                                role="menu"
+                                                style={
+                                                  assignedSlotMenuPosition
+                                                    ? {
+                                                        position: 'fixed',
+                                                        top: `${assignedSlotMenuPosition.top}px`,
+                                                        left: `${assignedSlotMenuPosition.left}px`,
+                                                        right: 'auto',
+                                                        marginTop: 0,
+                                                        transform: 'translateX(-100%)'
+                                                      }
+                                                    : undefined
+                                                }
+                                              >
+                                                {canEditAssignedManualStatus ? (
+                                                  <button
+                                                    type="button"
+                                                    role="menuitem"
+                                                    className="participant-actions-menu__item"
+                                                    disabled={
+                                                      !activeGroupId || assignedUnavailable
+                                                    }
+                                                    title={
+                                                      !activeGroupId
+                                                        ? 'Join or select a group to change availability'
+                                                        : assignedUnavailable
+                                                          ? 'Already unavailable'
+                                                          : undefined
+                                                    }
+                                                    onClick={() => {
+                                                      if (!activeGroupId || assignedUnavailable)
+                                                        return
+                                                      handleGroupManualStatusChange(
+                                                        assignedPlayer,
+                                                        'unavailable'
+                                                      )
+                                                      closeAssignedSlotMenu()
+                                                    }}
+                                                  >
+                                                    Set unavailable
+                                                  </button>
+                                                ) : null}
+                                                <div className="participant-actions-menu__sub-host">
+                                                  <button
+                                                    type="button"
+                                                    role="menuitem"
+                                                    className="participant-actions-menu__item participant-actions-menu__item--with-chevron"
+                                                    aria-haspopup="true"
+                                                    aria-expanded={
+                                                      assignedSlotMenuMoveSubOpen && menuOpen
+                                                    }
+                                                    disabled={
+                                                      assignedUnavailable || positionLockedHere
+                                                    }
+                                                    title={
+                                                      positionLockedHere
+                                                        ? 'Unlock position to move between teams'
+                                                        : undefined
+                                                    }
+                                                    onClick={() => {
+                                                      if (assignedUnavailable || positionLockedHere)
+                                                        return
+                                                      setAssignedSlotMenuMoveSubOpen((s) => !s)
+                                                      setAssignedSlotMenuSwapSubOpen(false)
+                                                    }}
+                                                  >
+                                                    <span>Move player</span>
+                                                    <ChevronRightIcon />
+                                                  </button>
+                                                  {assignedSlotMenuMoveSubOpen ? (
+                                                    <div
+                                                      className="participant-actions-menu__sub"
+                                                      role="presentation"
+                                                    >
+                                                      {moveEntries.map((entry) => (
+                                                        <button
+                                                          key={entry.teamIndex}
+                                                          type="button"
+                                                          role="menuitem"
+                                                          className={[
+                                                            'participant-actions-menu__item',
+                                                            'participant-actions-menu__sub-item',
+                                                            entry.isDisabled && 'is-disabled'
+                                                          ]
+                                                            .filter(Boolean)
+                                                            .join(' ')}
+                                                          disabled={entry.isDisabled}
+                                                          onClick={() => {
+                                                            if (entry.isDisabled) return
+                                                            handleAssignToTeam(
+                                                              assignedPlayer,
+                                                              entry.teamIndex
+                                                            )
+                                                            closeAssignedSlotMenu()
+                                                          }}
+                                                        >
+                                                          {gameConfig.teams?.[entry.teamIndex]
+                                                            ?.name || `Team ${entry.teamIndex + 1}`}
+                                                        </button>
+                                                      ))}
+                                                    </div>
+                                                  ) : null}
+                                                </div>
+                                                <button
+                                                  type="button"
+                                                  role="menuitem"
+                                                  className="participant-actions-menu__item"
+                                                  disabled={positionLockedHere}
+                                                  title={
+                                                    positionLockedHere
+                                                      ? 'Unlock player to randomize loadout'
+                                                      : undefined
+                                                  }
+                                                  onClick={() => {
+                                                    if (positionLockedHere) return
+                                                    handleRandomizePlayerLoadout(assignedPlayer)
+                                                    closeAssignedSlotMenu()
+                                                  }}
+                                                >
+                                                  Randomize loadout
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  role="menuitem"
+                                                  className="participant-actions-menu__item"
+                                                  onClick={() => {
+                                                    handleToggleAllLoadoutLocks(assignedPlayer)
+                                                    closeAssignedSlotMenu()
+                                                  }}
+                                                >
+                                                  {allAssignedLoadoutItemsLocked
+                                                    ? 'Unlock items'
+                                                    : 'Lock items'}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  role="menuitem"
+                                                  className="participant-actions-menu__item"
+                                                  onClick={() => {
+                                                    toggleParticipantPositionLock(
+                                                      assignedPlayer,
+                                                      teamIndex
+                                                    )
+                                                    closeAssignedSlotMenu()
+                                                  }}
+                                                >
+                                                  {positionLockedHere
+                                                    ? 'Unlock position'
+                                                    : 'Lock position'}
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  role="menuitem"
+                                                  className="participant-actions-menu__item"
+                                                  disabled={!hasLoadoutToClear}
+                                                  title={
+                                                    !hasLoadoutToClear
+                                                      ? 'Loadout is already empty'
+                                                      : undefined
+                                                  }
+                                                  onClick={() => {
+                                                    if (!hasLoadoutToClear) return
+                                                    handleClearPlayerLoadout(assignedPlayer)
+                                                    closeAssignedSlotMenu()
+                                                  }}
+                                                >
+                                                  Clear loadout
+                                                </button>
+                                                <div className="participant-actions-menu__sub-host">
+                                                  <button
+                                                    type="button"
+                                                    role="menuitem"
+                                                    className="participant-actions-menu__item participant-actions-menu__item--with-chevron"
+                                                    aria-haspopup="true"
+                                                    aria-expanded={
+                                                      assignedSlotMenuSwapSubOpen && menuOpen
+                                                    }
+                                                    disabled={swapIds.length === 0}
+                                                    title={
+                                                      swapIds.length === 0
+                                                        ? 'No other assigned players with a loadout'
+                                                        : undefined
+                                                    }
+                                                    onClick={() => {
+                                                      if (swapIds.length === 0) return
+                                                      setAssignedSlotMenuSwapSubOpen((s) => !s)
+                                                      setAssignedSlotMenuMoveSubOpen(false)
+                                                    }}
+                                                  >
+                                                    <span>Swap loadout</span>
+                                                    <ChevronRightIcon />
+                                                  </button>
+                                                  {assignedSlotMenuSwapSubOpen ? (
+                                                    <div
+                                                      className="participant-actions-menu__sub"
+                                                      role="presentation"
+                                                    >
+                                                      {swapIds.map((otherId) => (
+                                                        <button
+                                                          key={otherId}
+                                                          type="button"
+                                                          role="menuitem"
+                                                          className="participant-actions-menu__item participant-actions-menu__sub-item"
+                                                          onClick={() => {
+                                                            handleSwapPlayerLoadouts(
+                                                              assignedPlayer,
+                                                              otherId
+                                                            )
+                                                            closeAssignedSlotMenu()
+                                                          }}
+                                                        >
+                                                          {labelForParticipant(otherId)}
+                                                        </button>
+                                                      ))}
+                                                    </div>
+                                                  ) : null}
+                                                </div>
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        </div>
+                                      )
+                                    })()}
                                 </div>
                                 <div className="loadout-display">
                                   {/* Class */}
@@ -3722,17 +4746,29 @@ function App() {
                       })}
                     </div>
                     {/* Available participants that can be assigned */}
-                    {!isViewOnlyMode && participants.filter(p => !Object.values(teamAssignments).flat().includes(p)).length > 0 && (
+                    {!isViewOnlyMode &&
+                      participants.filter(
+                        (p) =>
+                          !Object.values(teamAssignments).flat().includes(p) &&
+                          !isParticipantUnavailableForTeams(p)
+                      ).length > 0 && (
                       <div className="assign-options">
                         <p>Assign:</p>
                         {participants
-                          .filter(p => !Object.values(teamAssignments).flat().includes(p))
+                          .filter(
+                            (p) =>
+                              !Object.values(teamAssignments).flat().includes(p) &&
+                              !isParticipantUnavailableForTeams(p)
+                          )
                           .map((id) => (
                             <button
                               key={id}
                               className="assign-btn"
                               onClick={() => handleAssignToTeam(id, teamIndex)}
-                              disabled={teamAssignments[teamIndex]?.length >= modeConfig.players_per_team}
+                              disabled={
+                                teamAssignments[teamIndex]?.length >= modeConfig.players_per_team ||
+                                isParticipantUnavailableForTeams(id)
+                              }
                             >
                               {labelForParticipant(id)}
                             </button>

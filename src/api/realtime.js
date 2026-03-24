@@ -61,3 +61,34 @@ export function subscribeToGroupMembershipChanges(supabase, groupId, onChange) {
     supabase.removeChannel(channel)
   }
 }
+
+/**
+ * Subscribe to manual availability changes for the active group.
+ * @param {import('@supabase/supabase-js').SupabaseClient | null} supabase
+ * @param {string} groupId
+ * @param {() => void} onChange
+ * @returns {() => void} cleanup (remove channel)
+ */
+export function subscribeToGroupAvailabilityChanges(supabase, groupId, onChange) {
+  if (!supabase || !groupId) {
+    return () => {}
+  }
+
+  const channel = supabase
+    .channel(`group-availability-${groupId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'group_member_availability',
+        filter: `group_id=eq.${groupId}`
+      },
+      onChange
+    )
+    .subscribe()
+
+  return () => {
+    supabase.removeChannel(channel)
+  }
+}
