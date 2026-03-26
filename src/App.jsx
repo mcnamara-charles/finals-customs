@@ -40,10 +40,30 @@ import {
   removeGroupMember,
   normalizeGroupManualStatus
 } from './services/groupService'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import {
+  faArrowLeft,
+  faArrowRotateRight,
+  faChevronLeft,
+  faChevronRight,
+  faCloudSunRain,
+  faDice,
+  faEllipsisVertical,
+  faGamepad,
+  faGear,
+  faLock,
+  faLockOpen,
+  faUnlock,
+  faMap,
+  faPlus,
+  faSliders,
+  faXmark
+} from '@fortawesome/free-solid-svg-icons'
 
 const STATE_VERSION = '1.0.0'
 const SETTINGS_ALL_PLAYERS = '__all_players__'
 const SIDEBAR_OVERLAY_BREAKPOINT = 1440
+const DASHBOARD_SIDEBAR_OVERLAY_BREAKPOINT = 800
 const stableSerialize = (value) => {
   const normalize = (input) => {
     if (Array.isArray(input)) {
@@ -63,101 +83,64 @@ const stableSerialize = (value) => {
   return JSON.stringify(normalize(value))
 }
 
-// Icon Components
+// Icon Components (Font Awesome; names preserved for call sites).
+// Sizing lives in App.css so responsive/context rules are not overridden by inline styles.
+const FA_ICON_CLASS = 'app-fa-icon'
+
 const SettingsIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-    <circle cx="12" cy="12" r="3"></circle>
-  </svg>
+  <FontAwesomeIcon icon={faGear} className={FA_ICON_CLASS} aria-hidden />
+)
+
+const OverridesIcon = () => (
+  <FontAwesomeIcon icon={faSliders} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const LockIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-  </svg>
+  <FontAwesomeIcon icon={faUnlock} className={`${FA_ICON_CLASS} app-fa-lock`} aria-hidden />
+)
+
+const PositionLockIcon = () => (
+  <FontAwesomeIcon icon={faLock} className={`${FA_ICON_CLASS} app-fa-position-lock`} aria-hidden />
 )
 
 const UnlockIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-    <path d="M7 11V7a5 5 0 0 1 9.9-1"></path>
-  </svg>
+  <FontAwesomeIcon icon={faLockOpen} className={`${FA_ICON_CLASS} app-fa-lock`} aria-hidden />
 )
 
 const SmallDiceIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-    <circle cx="8" cy="8" r="1.5" fill="currentColor"></circle>
-    <circle cx="16" cy="16" r="1.5" fill="currentColor"></circle>
-    <circle cx="8" cy="16" r="1.5" fill="currentColor"></circle>
-    <circle cx="16" cy="8" r="1.5" fill="currentColor"></circle>
-    <circle cx="12" cy="12" r="1.5" fill="currentColor"></circle>
-  </svg>
+  <FontAwesomeIcon icon={faDice} className={`${FA_ICON_CLASS} app-fa-dice-sm`} aria-hidden />
 )
 
 const DiceIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-    <circle cx="8" cy="8" r="1.5" fill="currentColor"></circle>
-    <circle cx="16" cy="16" r="1.5" fill="currentColor"></circle>
-    <circle cx="8" cy="16" r="1.5" fill="currentColor"></circle>
-    <circle cx="16" cy="8" r="1.5" fill="currentColor"></circle>
-    <circle cx="12" cy="12" r="1.5" fill="currentColor"></circle>
-  </svg>
+  <FontAwesomeIcon icon={faDice} className={`${FA_ICON_CLASS} app-fa-dice`} aria-hidden />
 )
 
 const ModeIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="8" width="18" height="8" rx="4"></rect>
-    <line x1="8" y1="8" x2="8" y2="5"></line>
-    <line x1="16" y1="8" x2="16" y2="5"></line>
-  </svg>
+  <FontAwesomeIcon icon={faGamepad} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const MapIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"></path>
-    <line x1="9" y1="4" x2="9" y2="20"></line>
-    <line x1="15" y1="6" x2="15" y2="22"></line>
-  </svg>
+  <FontAwesomeIcon icon={faMap} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const WeatherIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"></path>
-    <line x1="8" y1="19" x2="8.01" y2="19"></line>
-    <line x1="12" y1="19" x2="12.01" y2="19"></line>
-    <line x1="16" y1="19" x2="16.01" y2="19"></line>
-  </svg>
+  <FontAwesomeIcon icon={faCloudSunRain} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const RefreshIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="23 4 23 10 17 10"></polyline>
-    <polyline points="1 20 1 14 7 14"></polyline>
-    <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 4.36A9 9 0 0 0 20.49 15"></path>
-  </svg>
+  <FontAwesomeIcon icon={faArrowRotateRight} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const ParticipantMenuDotsIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-    <circle cx="12" cy="5" r="1.75" />
-    <circle cx="12" cy="12" r="1.75" />
-    <circle cx="12" cy="19" r="1.75" />
-  </svg>
+  <FontAwesomeIcon icon={faEllipsisVertical} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const ChevronLeftIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="15 18 9 12 15 6"></polyline>
-  </svg>
+  <FontAwesomeIcon icon={faChevronLeft} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const ChevronRightIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="9 18 15 12 9 6"></polyline>
-  </svg>
+  <FontAwesomeIcon icon={faChevronRight} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const DASHBOARD_MEMBER_CHIP_PREVIEW = 3
@@ -274,6 +257,9 @@ function App() {
   const [isSidebarOverlayMode, setIsSidebarOverlayMode] = useState(
     () => window.innerWidth < SIDEBAR_OVERLAY_BREAKPOINT
   )
+  const [isDashboardSidebarCollapsed, setIsDashboardSidebarCollapsed] = useState(
+    () => window.innerWidth < DASHBOARD_SIDEBAR_OVERLAY_BREAKPOINT
+  )
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [participants, setParticipants] = useState([])
   const [groupMemberRoster, setGroupMemberRoster] = useState([])
@@ -294,7 +280,6 @@ function App() {
   const [loadouts, setLoadouts] = useState({}) // { participantName: { class, specialization, weapon, gadgets: [] } }
   const [lockedLoadouts, setLockedLoadouts] = useState({}) // { participantName: { class: true/false, specialization: true/false, weapon: true/false, gadgets: [true/false] } }
   const [loadoutSelector, setLoadoutSelector] = useState(null) // { participant, type, index } or null
-  const [excludedItems, setExcludedItems] = useState({}) // { participantName: { class: [], specialization: { _global: [], light: [], medium: [], heavy: [] }, weapon: { _global: [], light: [], medium: [], heavy: [] }, gadget: { _global: [], light: [], medium: [], heavy: [] } } }
   const [classInputs, setClassInputs] = useState({})
   const [classEnabled, setClassEnabled] = useState({})
   const [specializationInputs, setSpecializationInputs] = useState({})
@@ -339,6 +324,7 @@ function App() {
   const [linkedParticipantPulseId, setLinkedParticipantPulseId] = useState(null)
   const linkedParticipantPulseTimeoutRef = useRef(null)
   const isViewOnlyMode = groupRole === 'member'
+  const isDashboardSidebarOverlayMode = viewportWidth < DASHBOARD_SIDEBAR_OVERLAY_BREAKPOINT
 
   const endTeamDnD = useCallback(() => {
     teamDnDRef.current = null
@@ -425,17 +411,6 @@ function App() {
       return changed ? next : prev
     })
     setLockedLoadouts((prev) => {
-      const next = { ...prev }
-      let changed = false
-      for (const key of Object.keys(next)) {
-        if (!valid.has(key)) {
-          delete next[key]
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-    setExcludedItems((prev) => {
       const next = { ...prev }
       let changed = false
       for (const key of Object.keys(next)) {
@@ -671,7 +646,6 @@ function App() {
       if (parsed.keepSeparatePairs !== undefined) setKeepSeparatePairs(parsed.keepSeparatePairs)
       if (parsed.loadouts) setLoadouts(parsed.loadouts)
       if (parsed.lockedLoadouts) setLockedLoadouts(parsed.lockedLoadouts)
-      if (parsed.excludedItems !== undefined) setExcludedItems(parsed.excludedItems)
       if (parsed.classInputs !== undefined) setClassInputs(parsed.classInputs)
       if (parsed.classEnabled !== undefined) setClassEnabled(parsed.classEnabled)
       if (parsed.specializationInputs !== undefined) setSpecializationInputs(parsed.specializationInputs)
@@ -688,12 +662,44 @@ function App() {
       if (parsed.lockedGamemode !== undefined) setLockedGamemode(parsed.lockedGamemode)
       if (parsed.lockedMap !== undefined) setLockedMap(parsed.lockedMap)
       if (parsed.lockedWeather !== undefined) setLockedWeather(parsed.lockedWeather)
+      if (parsed.lockedWeather === true && parsed.lockedMap !== true) {
+        setLockedMap(true)
+      }
       if (parsed.lockedLoadoutRandomTarget !== undefined)
         setLockedLoadoutRandomTarget(parsed.lockedLoadoutRandomTarget)
       if (parsed.isSidebarCollapsed !== undefined) setIsSidebarCollapsed(parsed.isSidebarCollapsed)
     },
     [activeGroupId]
   )
+
+  useEffect(() => {
+    if (lockedWeather && !lockedMap) {
+      setLockedMap(true)
+    }
+  }, [lockedWeather, lockedMap])
+
+  // mapsConfig is a static JSON import; this effect only needs to react to map/weather state above.
+  useEffect(() => {
+    if (!selectedMapId) {
+      if (selectedWeather != null && !lockedWeather) {
+        setSelectedWeather(null)
+      }
+      return
+    }
+    const details = mapsConfig.map_modifiers[selectedMapId]
+    const list = details?.weather
+    if (!list || list.length === 0) {
+      if (selectedWeather != null) setSelectedWeather(null)
+      return
+    }
+    if (selectedWeather != null && !list.includes(selectedWeather)) {
+      if (lockedWeather) {
+        setSelectedWeather(list[Math.floor(Math.random() * list.length)])
+      } else {
+        setSelectedWeather(null)
+      }
+    }
+  }, [selectedMapId, selectedWeather, lockedWeather])
 
   useEffect(() => {
     if (!session?.user?.id || !supabase) {
@@ -889,7 +895,6 @@ function App() {
       keepSeparatePairs,
       loadouts,
       lockedLoadouts,
-      excludedItems,
       classInputs,
       classEnabled,
       specializationInputs,
@@ -946,7 +951,6 @@ function App() {
     keepSeparatePairs,
     loadouts,
     lockedLoadouts,
-    excludedItems,
     classInputs,
     classEnabled,
     specializationInputs,
@@ -1035,9 +1039,21 @@ function App() {
 
     const userId = session.user.id
     let isMounted = true
-    const unsubscribe = subscribeToGroupAvailabilityChanges(supabase, activeGroupId, async () => {
+    const unsubscribe = subscribeToGroupAvailabilityChanges(supabase, activeGroupId, async (payload) => {
       if (!isMounted) return
       try {
+        const changedUserId = payload?.new?.user_id || payload?.old?.user_id
+        if (changedUserId) {
+          const nextStatus =
+            payload?.eventType === 'DELETE'
+              ? 'available'
+              : normalizeGroupManualStatus(payload?.new?.manual_status)
+          setGroupMemberRoster((prev) =>
+            prev.map((row) =>
+              row.user_id === changedUserId ? { ...row, manual_status: nextStatus } : row
+            )
+          )
+        }
         const memberRows = await fetchGroupMembers(activeGroupId)
         if (!isMounted) return
         const orderedRows = orderGroupMemberRows(memberRows)
@@ -1106,6 +1122,13 @@ function App() {
       setIsSidebarCollapsed(true)
     }
   }, [isSidebarOverlayMode])
+
+  useEffect(() => {
+    // On narrow dashboard screens, sidebar starts closed by default.
+    if (isDashboardSidebarOverlayMode) {
+      setIsDashboardSidebarCollapsed(true)
+    }
+  }, [isDashboardSidebarOverlayMode])
 
   useEffect(() => {
     if (!isViewOnlyMode) return
@@ -1669,10 +1692,10 @@ function App() {
     return shuffled
   }
 
-  const handleRandomizeTeams = () => {
-    if (!selectedGamemode || participants.length === 0) return
+  const buildRandomizedTeamResult = (gamemodeKey) => {
+    if (!gamemodeKey || participants.length === 0) return null
 
-    const mode = gameConfig.gamemodes[selectedGamemode]
+    const mode = gameConfig.gamemodes[gamemodeKey]
     const numTeams = mode.teams
     const playersPerTeam = mode.players_per_team
 
@@ -1737,73 +1760,128 @@ function App() {
 
     // Fill teams with unlocked participants
     if (balancedTeams) {
-      // Balanced: round-robin fashion
-      for (let slotIndex = 0; slotIndex < playersPerTeam && shuffledUnlocked.length > 0; slotIndex++) {
-        for (let teamIndex = 0; teamIndex < teamsToUse && shuffledUnlocked.length > 0; teamIndex++) {
-          // Skip if this team is full or this slot is reserved for a locked player
-          if (teamSlotsUsed[teamIndex] >= playersPerTeam) continue
-          
-          // If slot doesn't exist or is null, add the participant
-          if (!newAssignments[teamIndex][slotIndex]) {
-            let pickIndex = shuffledUnlocked.findIndex(
+      // Balanced: round-robin; retry passes avoid avoidable keep-separate violations
+      for (let slotIndex = 0; slotIndex < playersPerTeam; slotIndex++) {
+        if (shuffledUnlocked.length === 0) break
+        let progress = true
+        while (progress && shuffledUnlocked.length > 0) {
+          progress = false
+          for (let teamIndex = 0; teamIndex < teamsToUse; teamIndex++) {
+            if (teamSlotsUsed[teamIndex] >= playersPerTeam) continue
+            if (newAssignments[teamIndex][slotIndex]) continue
+
+            const pickIndex = shuffledUnlocked.findIndex(
               (participant) => !teamHasConflict(teamIndex, participant, newAssignments)
             )
-            if (pickIndex === -1) pickIndex = 0
+            if (pickIndex === -1) continue
+
             const pickedParticipant = shuffledUnlocked.splice(pickIndex, 1)[0]
             if (!pickedParticipant) continue
             newAssignments[teamIndex][slotIndex] = pickedParticipant
             teamSlotsUsed[teamIndex]++
+            progress = true
           }
+        }
+        for (let teamIndex = 0; teamIndex < teamsToUse; teamIndex++) {
+          if (teamSlotsUsed[teamIndex] >= playersPerTeam) continue
+          if (newAssignments[teamIndex][slotIndex]) continue
+          if (shuffledUnlocked.length === 0) break
+
+          let pickIndex = shuffledUnlocked.findIndex(
+            (participant) => !teamHasConflict(teamIndex, participant, newAssignments)
+          )
+          if (pickIndex === -1) pickIndex = 0
+          const pickedParticipant = shuffledUnlocked.splice(pickIndex, 1)[0]
+          if (!pickedParticipant) continue
+          newAssignments[teamIndex][slotIndex] = pickedParticipant
+          teamSlotsUsed[teamIndex]++
         }
       }
     } else {
-      // Unbalanced: dice roll for each participant
-      shuffledUnlocked.forEach((participant) => {
-        const teamsWithSpace = []
-        const conflictFreeTeams = []
+      // Unbalanced: multi-pass placement prefers conflict-free teams before forcing
+      let queue = [...shuffledUnlocked]
+      let safety = 0
+      while (queue.length > 0 && safety < participants.length * 4 + 8) {
+        safety += 1
+        const nextQueue = []
+        let placedAny = false
+        for (const participant of queue) {
+          const teamsWithSpace = []
+          const conflictFreeTeams = []
 
-        for (let teamIndex = 0; teamIndex < teamsToUse; teamIndex++) {
-          if (teamSlotsUsed[teamIndex] >= playersPerTeam) continue
-          teamsWithSpace.push(teamIndex)
-          if (!teamHasConflict(teamIndex, participant, newAssignments)) {
-            conflictFreeTeams.push(teamIndex)
+          for (let teamIndex = 0; teamIndex < teamsToUse; teamIndex++) {
+            if (teamSlotsUsed[teamIndex] >= playersPerTeam) continue
+            teamsWithSpace.push(teamIndex)
+            if (!teamHasConflict(teamIndex, participant, newAssignments)) {
+              conflictFreeTeams.push(teamIndex)
+            }
+          }
+
+          if (conflictFreeTeams.length > 0) {
+            const randomTeamIndex =
+              conflictFreeTeams[Math.floor(Math.random() * conflictFreeTeams.length)]
+            newAssignments[randomTeamIndex].push(participant)
+            teamSlotsUsed[randomTeamIndex]++
+            placedAny = true
+          } else if (teamsWithSpace.length > 0) {
+            nextQueue.push(participant)
           }
         }
+        queue = placedAny ? shuffleArray(nextQueue) : nextQueue
+        if (!placedAny) break
+      }
 
-        const candidateTeams = conflictFreeTeams.length > 0 ? conflictFreeTeams : teamsWithSpace
-        if (candidateTeams.length === 0) return
-
-        const randomTeamIndex = candidateTeams[Math.floor(Math.random() * candidateTeams.length)]
+      queue.forEach((participant) => {
+        const teamsWithSpace = []
+        for (let teamIndex = 0; teamIndex < teamsToUse; teamIndex++) {
+          if (teamSlotsUsed[teamIndex] < playersPerTeam) teamsWithSpace.push(teamIndex)
+        }
+        if (teamsWithSpace.length === 0) return
+        const randomTeamIndex = teamsWithSpace[Math.floor(Math.random() * teamsWithSpace.length)]
         newAssignments[randomTeamIndex].push(participant)
         teamSlotsUsed[randomTeamIndex]++
       })
 
-      // Check if all unlocked participants ended up on one team
-      // If so, move the last player to another team
-      const teamsWithPlayers = Object.keys(newAssignments).filter(teamIndex => 
-        newAssignments[teamIndex] && newAssignments[teamIndex].length > 0
+      // If everyone landed on one team, move one player to another when possible
+      const teamsWithPlayers = Object.keys(newAssignments).filter(
+        (teamIndex) => newAssignments[teamIndex] && newAssignments[teamIndex].length > 0
       )
-      
-      if (teamsWithPlayers.length === 1 && shuffledUnlocked.length > 1) {
-        // All players are on one team - move the last player
-        const teamWithAllPlayers = parseInt(teamsWithPlayers[0])
-        const lastPlayer = newAssignments[teamWithAllPlayers].pop()
-        teamSlotsUsed[teamWithAllPlayers]--
-        
-        // Find another team with space
-        let moved = false
-        for (let i = 0; i < teamsToUse && !moved; i++) {
-          if (i !== teamWithAllPlayers && teamSlotsUsed[i] < playersPerTeam) {
-            newAssignments[i].push(lastPlayer)
-            teamSlotsUsed[i]++
-            moved = true
+
+      if (teamsWithPlayers.length === 1) {
+        const teamWithAllPlayers = parseInt(teamsWithPlayers[0], 10)
+        const members = newAssignments[teamWithAllPlayers]
+        if (members.length > 1) {
+          const lastPlayer = members.pop()
+          teamSlotsUsed[teamWithAllPlayers]--
+
+          const candidates = []
+          for (let i = 0; i < teamsToUse; i++) {
+            if (i !== teamWithAllPlayers && teamSlotsUsed[i] < playersPerTeam) {
+              candidates.push(i)
+            }
           }
-        }
-        
-        // If still couldn't move (shouldn't happen), put them back
-        if (!moved) {
-          newAssignments[teamWithAllPlayers].push(lastPlayer)
-          teamSlotsUsed[teamWithAllPlayers]++
+
+          let moved = false
+          for (const i of candidates) {
+            if (!teamHasConflict(i, lastPlayer, newAssignments)) {
+              newAssignments[i].push(lastPlayer)
+              teamSlotsUsed[i]++
+              moved = true
+              break
+            }
+          }
+          if (!moved) {
+            for (const i of candidates) {
+              newAssignments[i].push(lastPlayer)
+              teamSlotsUsed[i]++
+              moved = true
+              break
+            }
+          }
+          if (!moved) {
+            newAssignments[teamWithAllPlayers].push(lastPlayer)
+            teamSlotsUsed[teamWithAllPlayers]++
+          }
         }
       }
     }
@@ -1822,7 +1900,7 @@ function App() {
     const teamMapping = {} // Maps old team index to new team index
     let compactIndex = 0
     const updatedLocks = {}
-    
+
     // First, add all non-empty teams
     for (let i = 0; i < numTeams; i++) {
       if (newAssignments[i] && newAssignments[i].length > 0) {
@@ -1831,7 +1909,7 @@ function App() {
         compactIndex++
       }
     }
-    
+
     // Then add empty teams at the end
     for (let i = 0; i < numTeams; i++) {
       if (newAssignments[i] && newAssignments[i].length === 0) {
@@ -1849,8 +1927,14 @@ function App() {
       }
     })
 
-    setTeamAssignments(compactedAssignments)
-    setLockedParticipants(updatedLocks)
+    return { compactedAssignments, updatedLocks }
+  }
+
+  const handleRandomizeTeams = () => {
+    const result = buildRandomizedTeamResult(selectedGamemode)
+    if (!result) return
+    setTeamAssignments(result.compactedAssignments)
+    setLockedParticipants(result.updatedLocks)
   }
 
   const handleToggleLoadoutLock = (participant, type, index = null) => {
@@ -1986,20 +2070,17 @@ function App() {
     setLoadoutSelector(null)
   }
 
-  const handleRandomizeLoadouts = () => {
-    // Get all assigned players (people who could have loadouts)
-    const allAssignedPlayers = Object.values(teamAssignments).flat()
-    if (allAssignedPlayers.length === 0 && participants.length === 0) return
+  const buildRandomizedLoadouts = (assignmentsSource, positionLocks) => {
+    const allAssignedPlayers = Object.values(assignmentsSource).flat()
+    if (allAssignedPlayers.length === 0 && participants.length === 0) return null
 
     const classNames = Object.keys(gameConfig.classes) // ['light', 'medium', 'heavy']
     const newLoadouts = { ...loadouts }
 
-    // Iterate over all assigned players and unassigned participants
     const allPlayers = [...new Set([...allAssignedPlayers, ...participants])]
-    
+
     allPlayers.forEach(participant => {
-      // Skip if player card is locked
-      if (lockedParticipants[participant] !== undefined) {
+      if (positionLocks[participant] !== undefined) {
         return
       }
 
@@ -2016,7 +2097,6 @@ function App() {
       // Randomly select a class (if not locked and no other items are locked)
       if (!locks.class && !hasLockedItems) {
         const availableClasses = classNames
-          .filter(className => !isItemExcluded(participant, 'class', null, className))
           .filter(className => isClassEnabledForRandomizer(participant, className))
         currentLoadout.class = getWeightedRandomItem(
           availableClasses,
@@ -2045,7 +2125,6 @@ function App() {
       // Randomly select a specialization (if not locked)
       if (!locks.specialization) {
         const specializations = (classData.specializations || [])
-          .filter(spec => !isItemExcluded(participant, 'specialization', selectedClass, spec.name))
           .filter(spec => isSpecializationEnabledForRandomizer(participant, selectedClass, spec.name))
         currentLoadout.specialization = getWeightedRandomItem(
           specializations,
@@ -2056,7 +2135,6 @@ function App() {
       // Randomly select a weapon (if not locked)
       if (!locks.weapon) {
         const weapons = (classData.weapons || [])
-          .filter(weapon => !isItemExcluded(participant, 'weapon', selectedClass, weapon.name))
           .filter(weapon => isWeaponEnabledForRandomizer(participant, selectedClass, weapon.name))
         currentLoadout.weapon = getWeightedRandomItem(
           weapons,
@@ -2075,7 +2153,6 @@ function App() {
       const lockedGadgetNames = lockedGadgets.filter(Boolean).map(g => g.name)
       const availableGadgets = (classData.gadgets || [])
         .filter(g => !lockedGadgetNames.includes(g.name))
-        .filter(g => !isItemExcluded(participant, 'gadget', selectedClass, g.name))
         .filter(g => isGadgetEnabledForRandomizer(participant, selectedClass, g.name))
       
       // Fill unlocked slots with random gadgets
@@ -2101,7 +2178,12 @@ function App() {
       currentLoadout.gadgets = newGadgets
     })
 
-    setLoadouts(newLoadouts)
+    return newLoadouts
+  }
+
+  const handleRandomizeLoadouts = () => {
+    const next = buildRandomizedLoadouts(teamAssignments, lockedParticipants)
+    if (next) setLoadouts(next)
   }
 
   // Randomize a single player's loadout
@@ -2124,7 +2206,6 @@ function App() {
     // Randomly select a class (if not locked and no other items are locked)
     if (!locks.class && !hasLockedItems) {
       const availableClasses = classNames
-        .filter(className => !isItemExcluded(participant, 'class', null, className))
         .filter(className => isClassEnabledForRandomizer(participant, className))
       currentLoadout.class = getWeightedRandomItem(
         availableClasses,
@@ -2154,7 +2235,6 @@ function App() {
     // Randomly select a specialization (if not locked)
     if (!locks.specialization) {
       const specializations = (classData.specializations || [])
-        .filter(spec => !isItemExcluded(participant, 'specialization', selectedClass, spec.name))
         .filter(spec => isSpecializationEnabledForRandomizer(participant, selectedClass, spec.name))
       currentLoadout.specialization = getWeightedRandomItem(
         specializations,
@@ -2165,7 +2245,6 @@ function App() {
     // Randomly select a weapon (if not locked)
     if (!locks.weapon) {
       const weapons = (classData.weapons || [])
-        .filter(weapon => !isItemExcluded(participant, 'weapon', selectedClass, weapon.name))
         .filter(weapon => isWeaponEnabledForRandomizer(participant, selectedClass, weapon.name))
       currentLoadout.weapon = getWeightedRandomItem(
         weapons,
@@ -2184,7 +2263,6 @@ function App() {
       const lockedGadgetNames = lockedGadgets.filter(Boolean).map(g => g.name)
       const availableGadgets = (classData.gadgets || [])
         .filter(g => !lockedGadgetNames.includes(g.name))
-        .filter(g => !isItemExcluded(participant, 'gadget', selectedClass, g.name))
         .filter(g => isGadgetEnabledForRandomizer(participant, selectedClass, g.name))
     
     // Fill unlocked slots with random gadgets
@@ -2209,66 +2287,6 @@ function App() {
     
     currentLoadout.gadgets = newGadgets
     setLoadouts(newLoadouts)
-  }
-
-  // Toggle exclude state for an item (per participant)
-  const handleToggleExclude = (participant, type, className, itemName) => {
-    setExcludedItems(prev => {
-      const participantExclusions = prev[participant] || {
-        class: [],
-        specialization: { _global: [], light: [], medium: [], heavy: [] },
-        weapon: { _global: [], light: [], medium: [], heavy: [] },
-        gadget: { _global: [], light: [], medium: [], heavy: [] }
-      }
-      
-      if (type === 'class') {
-        const isExcluded = participantExclusions.class.includes(itemName)
-        return {
-          ...prev,
-          [participant]: {
-            ...participantExclusions,
-            class: isExcluded
-              ? participantExclusions.class.filter(name => name !== itemName)
-              : [...participantExclusions.class, itemName]
-          }
-        }
-      } else {
-        // Use '_global' key if className is null or undefined (no class selected)
-        const excludeKey = className || '_global'
-        const classExcluded = participantExclusions[type]?.[excludeKey] || []
-        const isExcluded = classExcluded.includes(itemName)
-        return {
-          ...prev,
-          [participant]: {
-            ...participantExclusions,
-            [type]: {
-              ...participantExclusions[type],
-              [excludeKey]: isExcluded
-                ? classExcluded.filter(name => name !== itemName)
-                : [...classExcluded, itemName]
-            }
-          }
-        }
-      }
-    })
-  }
-
-  // Check if an item is excluded (for a specific participant)
-  const isItemExcluded = (participant, type, className, itemName) => {
-    const participantExclusions = excludedItems[participant]
-    if (!participantExclusions) return false
-    
-    if (type === 'class') {
-      return participantExclusions.class.includes(itemName)
-    }
-    // Check global exclusion first
-    const globallyExcluded = participantExclusions[type]?._global?.includes(itemName) || false
-    if (globallyExcluded) return true
-    // Then check class-specific exclusion if className is provided
-    if (className) {
-      return participantExclusions[type]?.[className]?.includes(itemName) || false
-    }
-    return false
   }
 
   const getGlobalSettingsMap = (mapName) => {
@@ -2630,7 +2648,6 @@ function App() {
       if (hasLockedDependent) return
 
       const availableClasses = classNames
-        .filter((className) => !isItemExcluded(participant, 'class', null, className))
         .filter((className) => isClassEnabledForRandomizer(participant, className))
       const randomClass = getWeightedRandomItem(
         availableClasses,
@@ -2661,7 +2678,6 @@ function App() {
     if (type === 'specialization') {
       if (locks.specialization) return
       const specializations = (classData.specializations || [])
-        .filter((spec) => !isItemExcluded(participant, 'specialization', selectedClass, spec.name))
         .filter((spec) => isSpecializationEnabledForRandomizer(participant, selectedClass, spec.name))
       const randomSpec = getWeightedRandomItem(
         specializations,
@@ -2676,7 +2692,6 @@ function App() {
     if (type === 'weapon') {
       if (locks.weapon) return
       const weapons = (classData.weapons || [])
-        .filter((weapon) => !isItemExcluded(participant, 'weapon', selectedClass, weapon.name))
         .filter((weapon) => isWeaponEnabledForRandomizer(participant, selectedClass, weapon.name))
       const randomWeapon = getWeightedRandomItem(
         weapons,
@@ -2697,7 +2712,6 @@ function App() {
         .filter(Boolean)
       const availableGadgets = (classData.gadgets || [])
         .filter((gadget) => !blockedNames.includes(gadget.name))
-        .filter((gadget) => !isItemExcluded(participant, 'gadget', selectedClass, gadget.name))
         .filter((gadget) => isGadgetEnabledForRandomizer(participant, selectedClass, gadget.name))
       const randomGadget = getWeightedRandomItem(
         availableGadgets,
@@ -2712,33 +2726,79 @@ function App() {
 
   // Update randomize all to include map/weather
   const handleRandomizeAll = () => {
+    let nextGamemode = selectedGamemode
     if (!lockedGamemode) {
-      handleRandomizeGamemode()
+      const modes = Object.keys(gameConfig.gamemodes)
+      nextGamemode = modes[Math.floor(Math.random() * modes.length)]
+      setSelectedGamemode(nextGamemode)
     }
-    // Small delay to let gamemode update
-    setTimeout(() => {
-      if (!lockedMap) {
-        handleRandomizeMap()
+
+    if (!nextGamemode) {
+      if (!lockedLoadoutRandomTarget) {
+        handleRandomizeLoadoutRandomTarget()
       }
-      setTimeout(() => {
-        if (!lockedWeather) {
-          handleRandomizeWeather()
-        }
-      }, 50)
-    }, 50)
+      const teamResultEarly = buildRandomizedTeamResult(selectedGamemode)
+      if (teamResultEarly) {
+        setTeamAssignments(teamResultEarly.compactedAssignments)
+        setLockedParticipants(teamResultEarly.updatedLocks)
+        const loadoutNextEarly = buildRandomizedLoadouts(
+          teamResultEarly.compactedAssignments,
+          teamResultEarly.updatedLocks
+        )
+        if (loadoutNextEarly) setLoadouts(loadoutNextEarly)
+      } else {
+        handleRandomizeLoadouts()
+      }
+      return
+    }
+
+    let nextMapId = selectedMapId
+    if (!lockedMap) {
+      const maps = gameConfig.gamemodes[nextGamemode]?.maps || []
+      nextMapId = maps.length ? maps[Math.floor(Math.random() * maps.length)] : null
+    }
+
+    let nextWeather = selectedWeather
+    const mapDetailsForRand = nextMapId ? getMapDetails(nextMapId) : null
+    const weatherList = mapDetailsForRand?.weather
+    if (!lockedWeather) {
+      nextWeather =
+        weatherList?.length ? weatherList[Math.floor(Math.random() * weatherList.length)] : null
+    } else if (weatherList?.length) {
+      nextWeather =
+        selectedWeather && weatherList.includes(selectedWeather)
+          ? selectedWeather
+          : weatherList[Math.floor(Math.random() * weatherList.length)]
+    } else {
+      nextWeather = null
+    }
+
+    setSelectedMapId(nextMapId)
+    setSelectedWeather(nextWeather)
     if (!lockedLoadoutRandomTarget) {
       handleRandomizeLoadoutRandomTarget()
     }
-    handleRandomizeTeams()
-    handleRandomizeLoadouts()
+
+    const teamResult = buildRandomizedTeamResult(nextGamemode)
+    if (teamResult) {
+      setTeamAssignments(teamResult.compactedAssignments)
+      setLockedParticipants(teamResult.updatedLocks)
+      const loadoutNext = buildRandomizedLoadouts(
+        teamResult.compactedAssignments,
+        teamResult.updatedLocks
+      )
+      if (loadoutNext) setLoadouts(loadoutNext)
+    } else {
+      handleRandomizeLoadouts()
+    }
   }
 
   // Get selected map's modifier and display name
   const getMapDisplayName = () => {
     if (!selectedMapId) return '-- Select a map --'
     const mapDetails = getMapDetails(selectedMapId)
-    if (!mapDetails) return selectedMapId.replace('__', ' - ').replace(/_/g, ' ')
-    return `${mapDetails.map.replace(/_/g, ' ')} - ${mapDetails.modifier}`
+    if (!mapDetails) return selectedMapId.replace('__', ' / ').replace(/_/g, ' ')
+    return `${mapDetails.map.replace(/_/g, ' ')} / ${mapDetails.modifier}`
   }
 
   const getSelectedModeConfig = () => {
@@ -2985,6 +3045,36 @@ function App() {
     []
   )
 
+  const renderSelectorOptionCard = ({
+    key,
+    label,
+    imageFile,
+    itemType,
+    onSelect,
+    disabled = false,
+    title
+  }) => (
+    <div className={`weapon-settings-card selector-option-card ${disabled ? 'disabled' : ''}`} key={key}>
+      <div className="loadout-item-wrapper settings-weapon-wrapper">
+        <div
+          className={`loadout-item ${itemType}-item settings-weapon-preview selector-option-preview ${disabled ? 'disabled' : ''}`}
+          onClick={disabled ? undefined : onSelect}
+          title={title}
+          aria-disabled={disabled}
+        >
+          {imageFile ? (
+            <img src={imageFile} alt={label} className={`${itemType}-image`} />
+          ) : (
+            <span className="loadout-item-text">{label}</span>
+          )}
+        </div>
+        <div className={`loadout-item-label ${getLoadoutLabelClass(label)}`}>
+          <em>{label}</em>
+        </div>
+      </div>
+    </div>
+  )
+
   if (!groupsInitialised) {
     return (
       <div className="access-gate-page">
@@ -2998,11 +3088,31 @@ function App() {
 
   if (!activeGroupId) {
     return (
-      <div className="groups-dashboard-page">
-        <aside className="groups-dashboard-sidebar">
-          <div className="groups-dashboard-sidebar-logo" aria-label="The Finals Customs">
-            <span className="groups-dashboard-sidebar-logo-line1">The Finals</span>
-            <span className="groups-dashboard-sidebar-logo-line2">Customs</span>
+      <div className={`groups-dashboard-page ${isDashboardSidebarOverlayMode ? 'sidebar-overlay-mode' : ''}`}>
+        {isDashboardSidebarOverlayMode && !isDashboardSidebarCollapsed ? (
+          <button
+            className="groups-dashboard-sidebar-backdrop"
+            onClick={() => setIsDashboardSidebarCollapsed(true)}
+            aria-label="Close dashboard sidebar"
+            title="Close dashboard sidebar"
+          />
+        ) : null}
+        <aside className={`groups-dashboard-sidebar ${isDashboardSidebarCollapsed ? 'is-collapsed' : ''} ${isDashboardSidebarOverlayMode && !isDashboardSidebarCollapsed ? 'is-overlay' : ''}`}>
+          <div className="groups-dashboard-sidebar-header">
+            <div className="groups-dashboard-sidebar-logo" aria-label="The Finals Customs">
+              <span className="groups-dashboard-sidebar-logo-line1">The Finals</span>
+              <span className="groups-dashboard-sidebar-logo-line2">Customs</span>
+            </div>
+            {isDashboardSidebarOverlayMode ? (
+              <button
+                className="groups-dashboard-sidebar-collapse-btn"
+                onClick={() => setIsDashboardSidebarCollapsed(true)}
+                title="Collapse dashboard sidebar"
+                aria-label="Collapse dashboard sidebar"
+              >
+                <ChevronLeftIcon />
+              </button>
+            ) : null}
           </div>
           <div className="groups-dashboard-join">
             <label className="groups-dashboard-label" htmlFor="join-code-input">
@@ -3076,6 +3186,17 @@ function App() {
           </div>
         </aside>
         <main className="groups-dashboard-main">
+          {isDashboardSidebarOverlayMode && isDashboardSidebarCollapsed ? (
+            <button
+              className="groups-dashboard-sidebar-open-btn"
+              onClick={() => setIsDashboardSidebarCollapsed(false)}
+              title="Open dashboard sidebar"
+              aria-label="Open dashboard sidebar"
+            >
+              <ChevronRightIcon />
+              <span>Open Sidebar</span>
+            </button>
+          ) : null}
           <h1 className="groups-dashboard-main-title">Dashboard</h1>
           {groupsLoadError && <p className="access-modal-error">{groupsLoadError}</p>}
           <p className="groups-dashboard-main-help">
@@ -3152,10 +3273,10 @@ function App() {
               aria-label="Create group"
             >
               <span className="groups-dashboard-create-tile-plus" aria-hidden={true}>
-                +
+                <FontAwesomeIcon icon={faPlus} className={FA_ICON_CLASS} />
               </span>
             </button>
-            {myGroups.map((g) => {
+            {myGroups.filter((g) => g.name !== 'Default').map((g) => {
               const memberCount = g.member_count ?? 0
               const overflow =
                 memberCount > DASHBOARD_MEMBER_CHIP_PREVIEW
@@ -3229,7 +3350,15 @@ function App() {
           >
             <ChevronLeftIcon />
             <span className="dashboard-nav-label dashboard-nav-label--desktop">Dashboard</span>
-            <span className="dashboard-nav-label dashboard-nav-label--mobile">Back</span>
+          </button>
+          <button
+            type="button"
+            className="dashboard-nav-arrow-btn"
+            onClick={backToGroupsDashboard}
+            title="Back to dashboard"
+            aria-label="Back to dashboard"
+          >
+            <FontAwesomeIcon icon={faArrowLeft} className={`${FA_ICON_CLASS} dashboard-nav-arrow-icon`} aria-hidden />
           </button>
         </div>
         <h1 className="app-title">The Finals Customs</h1>
@@ -3242,19 +3371,6 @@ function App() {
             >
               <DiceIcon />
               <span className="randomize-all-label">Randomize All</span>
-            </button>
-          )}
-          {!isViewOnlyMode && (
-            <button
-              className="top-right-settings-btn"
-              onClick={() => {
-                setIsProfileMenuOpen(false)
-                setIsSettingsModalOpen(true)
-              }}
-              title="Open settings"
-              aria-label="Open settings"
-            >
-              <SettingsIcon />
             </button>
           )}
           <div className="profile-menu-wrap">
@@ -3371,10 +3487,7 @@ function App() {
                   </div>
                   <div className="collapsed-summary-data">
                     {selectedMapDetails && selectedWeather ? (
-                      <span className="collapsed-summary-value collapsed-weather-lines">
-                        <span>{selectedMapDetails.modifier}</span>
-                        <span>{selectedWeather}</span>
-                      </span>
+                      <span className="collapsed-summary-value">{`${selectedMapDetails.modifier} / ${selectedWeather}`}</span>
                     ) : (
                       <span className="collapsed-summary-value">--</span>
                     )}
@@ -3514,7 +3627,11 @@ function App() {
                   </button>
                   <button
                     className={`selector-action-btn ${lockedWeather ? 'locked' : ''}`}
-                    onClick={() => setLockedWeather(!lockedWeather)}
+                    onClick={() => {
+                      const next = !lockedWeather
+                      setLockedWeather(next)
+                      if (next) setLockedMap(true)
+                    }}
                     disabled={!selectedMapId}
                     title={lockedWeather ? 'Unlock weather' : 'Lock weather'}
                   >
@@ -3590,13 +3707,24 @@ function App() {
             <div className="participants-panel">
               <div className="participants-header">
                 <h2>Participants</h2>
-                <button
-                  className="settings-icon-btn"
-                  onClick={() => setIsTeamSettingsModalOpen(true)}
-                  title="Team Settings"
-                >
-                  <SettingsIcon />
-                </button>
+                <div className="participants-header-actions">
+                  <button
+                    className="settings-icon-btn"
+                    onClick={() => setIsTeamSettingsModalOpen(true)}
+                    title="Team Settings"
+                    aria-label="Open team settings"
+                  >
+                    <SettingsIcon />
+                  </button>
+                  <button
+                    className="settings-icon-btn"
+                    onClick={() => setIsSettingsModalOpen(true)}
+                    title="Randomizer Overrides"
+                    aria-label="Open randomizer overrides"
+                  >
+                    <OverridesIcon />
+                  </button>
+                </div>
               </div>
               <div
                 className={[
@@ -4118,6 +4246,7 @@ function App() {
                                   ? ' — Replace; freed player returns to the pool.'
                                   : ' — Cannot drop here.'
                             : ''
+                        const positionLockedHere = lockedParticipants[assignedPlayer] === teamIndex
                         return (
                           <div
                             key={slotIndex}
@@ -4170,9 +4299,19 @@ function App() {
                                 onDragEnd={endTeamDnD}
                               >
                                 <div className="player-name-row">
-                                  <span className="player-name">{labelForParticipant(assignedPlayer)}</span>
-                                  {!isViewOnlyMode &&
-                                    (() => {
+                                  <span className="player-name">
+                                    <span className="player-name-text">{labelForParticipant(assignedPlayer)}</span>
+                                    {positionLockedHere ? (
+                                      <span
+                                        className="player-position-lock"
+                                        title="Position locked"
+                                        aria-label="Position locked"
+                                      >
+                                        <PositionLockIcon />
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                  {(() => {
                                       const slotMenuKey = `${teamIndex}-${slotIndex}`
                                       const rosterRow = groupMemberRosterById.get(assignedPlayer)
                                       const membershipRole = rosterRow?.role || 'member'
@@ -4185,8 +4324,9 @@ function App() {
                                           targetMembershipRole: membershipRole
                                         })
                                       const assignedUnavailable = isParticipantUnavailableForTeams(assignedPlayer)
-                                      const positionLockedHere =
-                                        lockedParticipants[assignedPlayer] === teamIndex
+                                      const viewOnlyForAssignedPlayer =
+                                        isViewOnlyMode && session?.user?.id === assignedPlayer
+                                      const canOpenAssignedMenu = !isViewOnlyMode || viewOnlyForAssignedPlayer
                                       const moveEntries = Array.from(
                                         { length: modeConfig.teams },
                                         (_, ti) => {
@@ -4231,28 +4371,31 @@ function App() {
                                         )
                                       })()
                                       const menuOpen = assignedSlotMenuKey === slotMenuKey
+                                      if (!canOpenAssignedMenu) return null
 
                                       return (
                                         <div className="player-name-row__actions">
-                                          <div className="player-actions">
-                                            <button
-                                              className={`player-randomize-btn ${positionLockedHere ? 'disabled' : ''}`}
-                                              onClick={(e) => {
-                                                e.stopPropagation()
-                                                if (!positionLockedHere) {
-                                                  handleRandomizePlayerLoadout(assignedPlayer)
+                                          {!isViewOnlyMode ? (
+                                            <div className="player-actions">
+                                              <button
+                                                className={`player-randomize-btn ${positionLockedHere ? 'disabled' : ''}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  if (!positionLockedHere) {
+                                                    handleRandomizePlayerLoadout(assignedPlayer)
+                                                  }
+                                                }}
+                                                disabled={positionLockedHere}
+                                                title={
+                                                  positionLockedHere
+                                                    ? 'Unlock player to randomize loadout'
+                                                    : "Randomize this player's loadout"
                                                 }
-                                              }}
-                                              disabled={positionLockedHere}
-                                              title={
-                                                positionLockedHere
-                                                  ? 'Unlock player to randomize loadout'
-                                                  : "Randomize this player's loadout"
-                                              }
-                                            >
-                                              <DiceIcon />
-                                            </button>
-                                          </div>
+                                              >
+                                                <DiceIcon />
+                                              </button>
+                                            </div>
+                                          ) : null}
                                           <div
                                             className="assigned-slot-actions-wrap"
                                             data-assigned-slot-menu-wrap={slotMenuKey}
@@ -4308,7 +4451,7 @@ function App() {
                                                     : undefined
                                                 }
                                               >
-                                                {canEditAssignedManualStatus ? (
+                                                {((isViewOnlyMode && viewOnlyForAssignedPlayer) || (!isViewOnlyMode && canEditAssignedManualStatus)) ? (
                                                   <button
                                                     type="button"
                                                     role="menuitem"
@@ -4336,7 +4479,8 @@ function App() {
                                                     Set unavailable
                                                   </button>
                                                 ) : null}
-                                                <div className="participant-actions-menu__sub-host">
+                                                {!isViewOnlyMode ? (
+                                                  <div className="participant-actions-menu__sub-host">
                                                   <button
                                                     type="button"
                                                     role="menuitem"
@@ -4396,72 +4540,81 @@ function App() {
                                                       ))}
                                                     </div>
                                                   ) : null}
-                                                </div>
-                                                <button
-                                                  type="button"
-                                                  role="menuitem"
-                                                  className="participant-actions-menu__item"
-                                                  disabled={positionLockedHere}
-                                                  title={
-                                                    positionLockedHere
-                                                      ? 'Unlock player to randomize loadout'
-                                                      : undefined
-                                                  }
-                                                  onClick={() => {
-                                                    if (positionLockedHere) return
-                                                    handleRandomizePlayerLoadout(assignedPlayer)
-                                                    closeAssignedSlotMenu()
-                                                  }}
-                                                >
-                                                  Randomize loadout
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  role="menuitem"
-                                                  className="participant-actions-menu__item"
-                                                  onClick={() => {
-                                                    handleToggleAllLoadoutLocks(assignedPlayer)
-                                                    closeAssignedSlotMenu()
-                                                  }}
-                                                >
-                                                  {allAssignedLoadoutItemsLocked
-                                                    ? 'Unlock items'
-                                                    : 'Lock items'}
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  role="menuitem"
-                                                  className="participant-actions-menu__item"
-                                                  onClick={() => {
-                                                    toggleParticipantPositionLock(
-                                                      assignedPlayer,
-                                                      teamIndex
-                                                    )
-                                                    closeAssignedSlotMenu()
-                                                  }}
-                                                >
-                                                  {positionLockedHere
-                                                    ? 'Unlock position'
-                                                    : 'Lock position'}
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  role="menuitem"
-                                                  className="participant-actions-menu__item"
-                                                  disabled={!hasLoadoutToClear}
-                                                  title={
-                                                    !hasLoadoutToClear
-                                                      ? 'Loadout is already empty'
-                                                      : undefined
-                                                  }
-                                                  onClick={() => {
-                                                    if (!hasLoadoutToClear) return
-                                                    handleClearPlayerLoadout(assignedPlayer)
-                                                    closeAssignedSlotMenu()
-                                                  }}
-                                                >
-                                                  Clear loadout
-                                                </button>
+                                                  </div>
+                                                ) : null}
+                                                {!isViewOnlyMode ? (
+                                                  <button
+                                                    type="button"
+                                                    role="menuitem"
+                                                    className="participant-actions-menu__item"
+                                                    disabled={positionLockedHere}
+                                                    title={
+                                                      positionLockedHere
+                                                        ? 'Unlock player to randomize loadout'
+                                                        : undefined
+                                                    }
+                                                    onClick={() => {
+                                                      if (positionLockedHere) return
+                                                      handleRandomizePlayerLoadout(assignedPlayer)
+                                                      closeAssignedSlotMenu()
+                                                    }}
+                                                  >
+                                                    Randomize loadout
+                                                  </button>
+                                                ) : null}
+                                                {!isViewOnlyMode ? (
+                                                  <button
+                                                    type="button"
+                                                    role="menuitem"
+                                                    className="participant-actions-menu__item"
+                                                    onClick={() => {
+                                                      handleToggleAllLoadoutLocks(assignedPlayer)
+                                                      closeAssignedSlotMenu()
+                                                    }}
+                                                  >
+                                                    {allAssignedLoadoutItemsLocked
+                                                      ? 'Unlock items'
+                                                      : 'Lock items'}
+                                                  </button>
+                                                ) : null}
+                                                {!isViewOnlyMode ? (
+                                                  <button
+                                                    type="button"
+                                                    role="menuitem"
+                                                    className="participant-actions-menu__item"
+                                                    onClick={() => {
+                                                      toggleParticipantPositionLock(
+                                                        assignedPlayer,
+                                                        teamIndex
+                                                      )
+                                                      closeAssignedSlotMenu()
+                                                    }}
+                                                  >
+                                                    {positionLockedHere
+                                                      ? 'Unlock position'
+                                                      : 'Lock position'}
+                                                  </button>
+                                                ) : null}
+                                                {!isViewOnlyMode ? (
+                                                  <button
+                                                    type="button"
+                                                    role="menuitem"
+                                                    className="participant-actions-menu__item"
+                                                    disabled={!hasLoadoutToClear}
+                                                    title={
+                                                      !hasLoadoutToClear
+                                                        ? 'Loadout is already empty'
+                                                        : undefined
+                                                    }
+                                                    onClick={() => {
+                                                      if (!hasLoadoutToClear) return
+                                                      handleClearPlayerLoadout(assignedPlayer)
+                                                      closeAssignedSlotMenu()
+                                                    }}
+                                                  >
+                                                    Clear loadout
+                                                  </button>
+                                                ) : null}
                                                 <div className="participant-actions-menu__sub-host">
                                                   <button
                                                     type="button"
@@ -4547,16 +4700,22 @@ function App() {
                                           >
                                             <SmallDiceIcon />
                                           </button>
-                                          <button
-                                            className="loadout-lock-btn-inside class-lock"
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              handleToggleLoadoutLock(assignedPlayer, 'class')
-                                            }}
-                                            title={lockedLoadouts[assignedPlayer]?.class ? 'Click to unlock' : 'Click to lock'}
-                                          >
-                                            {lockedLoadouts[assignedPlayer]?.class ? <LockIcon /> : <UnlockIcon />}
-                                          </button>
+                                          {!isViewOnlyMode ? (
+                                            <button
+                                              className="loadout-lock-btn-inside class-lock"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleToggleLoadoutLock(assignedPlayer, 'class')
+                                              }}
+                                              title={lockedLoadouts[assignedPlayer]?.class ? 'Click to unlock' : 'Click to lock'}
+                                            >
+                                              {lockedLoadouts[assignedPlayer]?.class ? <LockIcon /> : <UnlockIcon />}
+                                            </button>
+                                          ) : lockedLoadouts[assignedPlayer]?.class ? (
+                                            <span className="loadout-lock-indicator-inside class-lock" title="Class locked">
+                                              <PositionLockIcon />
+                                            </span>
+                                          ) : null}
                                         </>
                                       ) : (
                                         <span className="loadout-item-text">Class</span>
@@ -4603,16 +4762,22 @@ function App() {
                                           >
                                             <SmallDiceIcon />
                                           </button>
-                                          <button
-                                            className="loadout-lock-btn-inside spec-lock"
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              handleToggleLoadoutLock(assignedPlayer, 'specialization')
-                                            }}
-                                            title={lockedLoadouts[assignedPlayer]?.specialization ? 'Click to unlock' : 'Click to lock'}
-                                          >
-                                            {lockedLoadouts[assignedPlayer]?.specialization ? <LockIcon /> : <UnlockIcon />}
-                                          </button>
+                                          {!isViewOnlyMode ? (
+                                            <button
+                                              className="loadout-lock-btn-inside spec-lock"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleToggleLoadoutLock(assignedPlayer, 'specialization')
+                                              }}
+                                              title={lockedLoadouts[assignedPlayer]?.specialization ? 'Click to unlock' : 'Click to lock'}
+                                            >
+                                              {lockedLoadouts[assignedPlayer]?.specialization ? <LockIcon /> : <UnlockIcon />}
+                                            </button>
+                                          ) : lockedLoadouts[assignedPlayer]?.specialization ? (
+                                            <span className="loadout-lock-indicator-inside spec-lock" title="Specialization locked">
+                                              <PositionLockIcon />
+                                            </span>
+                                          ) : null}
                                       </>
                                     ) : (
                                       <span className="loadout-item-text">Spec</span>
@@ -4659,16 +4824,22 @@ function App() {
                                           >
                                             <SmallDiceIcon />
                                           </button>
-                                          <button
-                                            className="loadout-lock-btn-inside weapon-lock"
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              handleToggleLoadoutLock(assignedPlayer, 'weapon')
-                                            }}
-                                            title={lockedLoadouts[assignedPlayer]?.weapon ? 'Click to unlock' : 'Click to lock'}
-                                          >
-                                            {lockedLoadouts[assignedPlayer]?.weapon ? <LockIcon /> : <UnlockIcon />}
-                                          </button>
+                                          {!isViewOnlyMode ? (
+                                            <button
+                                              className="loadout-lock-btn-inside weapon-lock"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleToggleLoadoutLock(assignedPlayer, 'weapon')
+                                              }}
+                                              title={lockedLoadouts[assignedPlayer]?.weapon ? 'Click to unlock' : 'Click to lock'}
+                                            >
+                                              {lockedLoadouts[assignedPlayer]?.weapon ? <LockIcon /> : <UnlockIcon />}
+                                            </button>
+                                          ) : lockedLoadouts[assignedPlayer]?.weapon ? (
+                                            <span className="loadout-lock-indicator-inside weapon-lock" title="Weapon locked">
+                                              <PositionLockIcon />
+                                            </span>
+                                          ) : null}
                                       </>
                                     ) : (
                                       <span className="loadout-item-text">Weapon</span>
@@ -4716,16 +4887,22 @@ function App() {
                                             >
                                               <SmallDiceIcon />
                                             </button>
-                                            <button
-                                              className="loadout-lock-btn-inside gadget-lock"
-                                              onClick={(e) => {
-                                                e.stopPropagation()
-                                                handleToggleLoadoutLock(assignedPlayer, 'gadget', idx)
-                                              }}
-                                              title={lockedLoadouts[assignedPlayer]?.gadgets?.[idx] ? 'Click to unlock' : 'Click to lock'}
-                                            >
-                                              {lockedLoadouts[assignedPlayer]?.gadgets?.[idx] ? <LockIcon /> : <UnlockIcon />}
-                                            </button>
+                                            {!isViewOnlyMode ? (
+                                              <button
+                                                className="loadout-lock-btn-inside gadget-lock"
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  handleToggleLoadoutLock(assignedPlayer, 'gadget', idx)
+                                                }}
+                                                title={lockedLoadouts[assignedPlayer]?.gadgets?.[idx] ? 'Click to unlock' : 'Click to lock'}
+                                              >
+                                                {lockedLoadouts[assignedPlayer]?.gadgets?.[idx] ? <LockIcon /> : <UnlockIcon />}
+                                              </button>
+                                            ) : lockedLoadouts[assignedPlayer]?.gadgets?.[idx] ? (
+                                              <span className="loadout-lock-indicator-inside gadget-lock" title={`Gadget ${idx + 1} locked`}>
+                                                <PositionLockIcon />
+                                              </span>
+                                            ) : null}
                                         </>
                                       ) : (
                                         <span className="loadout-item-text">Gadget</span>
@@ -4790,7 +4967,9 @@ function App() {
           <div className="modal-content user-settings-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>User settings</h2>
-              <button className="modal-close-btn" onClick={() => setIsUserSettingsModalOpen(false)}>×</button>
+              <button className="modal-close-btn" onClick={() => setIsUserSettingsModalOpen(false)} aria-label="Close modal">
+                <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
+              </button>
             </div>
             <div className="modal-body">
               <p className="groups-dashboard-settings-hint">
@@ -4816,7 +4995,9 @@ function App() {
                   <DiceIcon />
                   Randomize Weights
                 </button>
-                <button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)}>×</button>
+                <button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)} aria-label="Close modal">
+                  <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
+                </button>
               </div>
             </div>
             <div className="settings-overrides-topbar">
@@ -5146,7 +5327,9 @@ function App() {
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>Team Settings</h2>
-              <button className="modal-close-btn" onClick={() => setIsTeamSettingsModalOpen(false)}>×</button>
+              <button className="modal-close-btn" onClick={() => setIsTeamSettingsModalOpen(false)} aria-label="Close modal">
+                <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
+              </button>
             </div>
             <div className="modal-body">
               <label className="settings-checkbox">
@@ -5241,183 +5424,95 @@ function App() {
                        loadoutSelector.type === 'specialization' ? 'Specialization' : 
                        loadoutSelector.type === 'weapon' ? 'Weapon' : 'Gadget'}
               </h2>
-              <button className="modal-close-btn" onClick={() => setLoadoutSelector(null)}>×</button>
+              <button className="modal-close-btn" onClick={() => setLoadoutSelector(null)} aria-label="Close modal">
+                <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
+              </button>
             </div>
             <div className="modal-body loadout-selector-body">
               {loadoutSelector.type === 'class' && (
                 <div className="selector-options">
-                  {Object.keys(gameConfig.classes).map(className => {
-                    const isExcluded = isItemExcluded(loadoutSelector.participant, 'class', null, className)
-                    return (
-                      <div key={className} className="selector-option-row">
-                        <button
-                          className="selector-option-btn"
-                          onClick={() => handleLoadoutSelect(className)}
-                        >
-                          {className.charAt(0).toUpperCase() + className.slice(1)}
-                        </button>
-                        <label className="exclude-checkbox">
-                          <input
-                            type="checkbox"
-                            checked={!isExcluded}
-                            onChange={(e) => {
-                              e.stopPropagation()
-                              handleToggleExclude(loadoutSelector.participant, 'class', null, className)
-                            }}
-                          />
-                          <span>Include</span>
-                        </label>
-                      </div>
-                    )
-                  })}
+                  {classesList.map((classItem) =>
+                    renderSelectorOptionCard({
+                      key: classItem.key,
+                      label: classItem.name,
+                      imageFile: classItem.imageFile,
+                      itemType: 'class',
+                      onSelect: () => handleLoadoutSelect(classItem.key)
+                    })
+                  )}
                 </div>
               )}
               {loadoutSelector.type === 'specialization' && !loadouts[loadoutSelector.participant]?.class && (
                 <div className="selector-options">
-                  {Object.keys(gameConfig.classes).flatMap(className => 
-                    gameConfig.classes[className].specializations?.map(spec => {
-                      const isExcluded = isItemExcluded(loadoutSelector.participant, 'specialization', null, spec.name)
-                      return (
-                        <div key={`${className}-${spec.name}`} className="selector-option-row">
-                          <button
-                            className="selector-option-btn"
-                            disabled
-                            title="Select a class first to choose a specialization"
-                          >
-                            {spec.name} ({className})
-                          </button>
-                          <label className="exclude-checkbox">
-                            <input
-                              type="checkbox"
-                              checked={!isExcluded}
-                              onChange={(e) => {
-                                e.stopPropagation()
-                                handleToggleExclude(loadoutSelector.participant, 'specialization', null, spec.name)
-                              }}
-                            />
-                            <span>Include</span>
-                          </label>
-                        </div>
-                      )
-                    }) || []
+                  {specializationsByClass.flatMap(({ className, specializations }) =>
+                    specializations.map((spec) =>
+                      renderSelectorOptionCard({
+                        key: `${className}-${spec.name}`,
+                        label: `${spec.name} (${className})`,
+                        imageFile: spec.imageFile,
+                        itemType: 'spec',
+                        disabled: true,
+                        title: 'Select a class first to choose a specialization'
+                      })
+                    )
                   )}
                 </div>
               )}
               {loadoutSelector.type === 'specialization' && loadouts[loadoutSelector.participant]?.class && (
                 <div className="selector-options">
-                  {gameConfig.classes[loadouts[loadoutSelector.participant].class]?.specializations?.map(spec => {
-                    const isExcluded = isItemExcluded(loadoutSelector.participant, 'specialization', loadouts[loadoutSelector.participant].class, spec.name)
-                    return (
-                      <div key={spec.name} className="selector-option-row">
-                        <button
-                          className="selector-option-btn"
-                          onClick={() => handleLoadoutSelect(spec)}
-                        >
-                          {spec.name}
-                        </button>
-                        <label className="exclude-checkbox">
-                          <input
-                            type="checkbox"
-                            checked={!isExcluded}
-                            onChange={(e) => {
-                              e.stopPropagation()
-                              handleToggleExclude(loadoutSelector.participant, 'specialization', loadouts[loadoutSelector.participant].class, spec.name)
-                            }}
-                          />
-                          <span>Include</span>
-                        </label>
-                      </div>
-                    )
-                  })}
+                  {(gameConfig.classes[loadouts[loadoutSelector.participant].class]?.specializations || []).map((spec) =>
+                    renderSelectorOptionCard({
+                      key: spec.name,
+                      label: spec.name,
+                      imageFile: spec.imageFile,
+                      itemType: 'spec',
+                      onSelect: () => handleLoadoutSelect(spec)
+                    })
+                  )}
                 </div>
               )}
               {loadoutSelector.type === 'weapon' && !loadouts[loadoutSelector.participant]?.class && (
                 <div className="selector-options">
-                  {Object.keys(gameConfig.classes).flatMap(className => 
-                    gameConfig.classes[className].weapons?.map(weapon => {
-                      const isExcluded = isItemExcluded(loadoutSelector.participant, 'weapon', null, weapon.name)
-                      return (
-                        <div key={`${className}-${weapon.name}`} className="selector-option-row">
-                          <button
-                            className="selector-option-btn"
-                            disabled
-                            title="Select a class first to choose a weapon"
-                          >
-                            {weapon.name} ({className})
-                          </button>
-                          <label className="exclude-checkbox">
-                            <input
-                              type="checkbox"
-                              checked={!isExcluded}
-                              onChange={(e) => {
-                                e.stopPropagation()
-                                handleToggleExclude(loadoutSelector.participant, 'weapon', null, weapon.name)
-                              }}
-                            />
-                            <span>Include</span>
-                          </label>
-                        </div>
-                      )
-                    }) || []
+                  {weaponsByClass.flatMap(({ className, weapons }) =>
+                    weapons.map((weapon) =>
+                      renderSelectorOptionCard({
+                        key: `${className}-${weapon.name}`,
+                        label: `${weapon.name} (${className})`,
+                        imageFile: weapon.imageFile,
+                        itemType: 'weapon',
+                        disabled: true,
+                        title: 'Select a class first to choose a weapon'
+                      })
+                    )
                   )}
                 </div>
               )}
               {loadoutSelector.type === 'weapon' && loadouts[loadoutSelector.participant]?.class && (
                 <div className="selector-options">
-                  {gameConfig.classes[loadouts[loadoutSelector.participant].class]?.weapons?.map(weapon => {
-                    const isExcluded = isItemExcluded(loadoutSelector.participant, 'weapon', loadouts[loadoutSelector.participant].class, weapon.name)
-                    return (
-                      <div key={weapon.name} className="selector-option-row">
-                        <button
-                          className="selector-option-btn"
-                          onClick={() => handleLoadoutSelect(weapon)}
-                        >
-                          {weapon.name}
-                        </button>
-                        <label className="exclude-checkbox">
-                          <input
-                            type="checkbox"
-                            checked={!isExcluded}
-                            onChange={(e) => {
-                              e.stopPropagation()
-                              handleToggleExclude(loadoutSelector.participant, 'weapon', loadouts[loadoutSelector.participant].class, weapon.name)
-                            }}
-                          />
-                          <span>Include</span>
-                        </label>
-                      </div>
-                    )
-                  })}
+                  {(gameConfig.classes[loadouts[loadoutSelector.participant].class]?.weapons || []).map((weapon) =>
+                    renderSelectorOptionCard({
+                      key: weapon.name,
+                      label: weapon.name,
+                      imageFile: weapon.imageFile,
+                      itemType: 'weapon',
+                      onSelect: () => handleLoadoutSelect(weapon)
+                    })
+                  )}
                 </div>
               )}
               {loadoutSelector.type === 'gadget' && !loadouts[loadoutSelector.participant]?.class && (
                 <div className="selector-options">
-                  {Object.keys(gameConfig.classes).flatMap(className => 
-                    gameConfig.classes[className].gadgets?.map(gadget => {
-                      const isExcluded = isItemExcluded(loadoutSelector.participant, 'gadget', null, gadget.name)
-                      return (
-                        <div key={`${className}-${gadget.name}`} className="selector-option-row">
-                          <button
-                            className="selector-option-btn"
-                            disabled
-                            title="Select a class first to choose a gadget"
-                          >
-                            {gadget.name} ({className})
-                          </button>
-                          <label className="exclude-checkbox">
-                            <input
-                              type="checkbox"
-                              checked={!isExcluded}
-                              onChange={(e) => {
-                                e.stopPropagation()
-                                handleToggleExclude(loadoutSelector.participant, 'gadget', null, gadget.name)
-                              }}
-                            />
-                            <span>Include</span>
-                          </label>
-                        </div>
-                      )
-                    }) || []
+                  {gadgetsByClass.flatMap(({ className, gadgets }) =>
+                    gadgets.map((gadget) =>
+                      renderSelectorOptionCard({
+                        key: `${className}-${gadget.name}`,
+                        label: `${gadget.name} (${className})`,
+                        imageFile: gadget.imageFile,
+                        itemType: 'gadget',
+                        disabled: true,
+                        title: 'Select a class first to choose a gadget'
+                      })
+                    )
                   )}
                 </div>
               )}
@@ -5429,30 +5524,15 @@ function App() {
                       const currentGadgets = loadouts[loadoutSelector.participant]?.gadgets || []
                       return !currentGadgets.some((g, i) => g && g.name === gadget.name && i !== loadoutSelector.index)
                     })
-                    ?.map(gadget => {
-                      const isExcluded = isItemExcluded(loadoutSelector.participant, 'gadget', loadouts[loadoutSelector.participant].class, gadget.name)
-                      return (
-                        <div key={gadget.name} className="selector-option-row">
-                          <button
-                            className="selector-option-btn"
-                            onClick={() => handleLoadoutSelect(gadget)}
-                          >
-                            {gadget.name}
-                          </button>
-                          <label className="exclude-checkbox">
-                            <input
-                              type="checkbox"
-                              checked={!isExcluded}
-                              onChange={(e) => {
-                                e.stopPropagation()
-                                handleToggleExclude(loadoutSelector.participant, 'gadget', loadouts[loadoutSelector.participant].class, gadget.name)
-                              }}
-                            />
-                            <span>Include</span>
-                          </label>
-                        </div>
-                      )
-                    })}
+                    ?.map((gadget) =>
+                      renderSelectorOptionCard({
+                        key: gadget.name,
+                        label: gadget.name,
+                        imageFile: gadget.imageFile,
+                        itemType: 'gadget',
+                        onSelect: () => handleLoadoutSelect(gadget)
+                      })
+                    )}
                 </div>
               )}
             </div>
