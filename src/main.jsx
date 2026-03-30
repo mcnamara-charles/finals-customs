@@ -9,7 +9,11 @@ import { SignupPage } from './pages/SignupPage'
 import { CheckEmailPage } from './pages/CheckEmailPage'
 import { AuthCallbackPage } from './pages/AuthCallbackPage'
 import './index.css'
+import './theme/app-theme.css'
 import './App.css'
+import { readStoredAppTheme, applyAppTheme } from './theme/appTheme.js'
+
+applyAppTheme(readStoredAppTheme())
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

@@ -1,5 +1,12 @@
 import { useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import {
+  faCircleExclamation,
+  faEnvelope,
+  faRightToBracket,
+  faUserPlus
+} from '@fortawesome/free-solid-svg-icons'
 import { useAuth } from '../auth/authContext'
 import { mapAuthError } from '../auth/authErrors'
 import {
@@ -9,6 +16,11 @@ import {
   signInWithEmail
 } from '../services/authService'
 import { supabase } from '../lib/supabaseClient'
+import { AuthOAuthButtons } from '../components/AuthOAuthButtons'
+import { AuthPasswordField } from '../components/AuthPasswordField'
+import { FullPageLoading } from '../components/FullPageLoading'
+
+const FA_ICON_CLASS = 'app-fa-icon'
 
 export function LoginPage() {
   const { session, authReady } = useAuth()
@@ -25,14 +37,7 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false)
 
   if (!authReady) {
-    return (
-      <div className="access-gate-page">
-        <div className="access-gate-card">
-          <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">Loading…</p>
-        </div>
-      </div>
-    )
+    return <FullPageLoading label="Loading session" />
   }
 
   if (session) {
@@ -46,6 +51,7 @@ export function LoginPage() {
   }
 
   const handleSubmit = async () => {
+    if (busy) return
     if (!supabase) {
       setError('Supabase is not configured (URL / anon key).')
       return
@@ -79,64 +85,91 @@ export function LoginPage() {
   }
 
   return (
-    <div className="access-gate-page">
-      <div className="access-gate-card access-gate-card-wide">
-        <h1 className="access-gate-title">The Finals Customs</h1>
-        <p className="access-gate-help">Sign in with your email.</p>
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => {
-            setEmail(e.target.value)
-            if (error) setError('')
-          }}
-          placeholder="Email"
-          className="access-auth-input"
-          autoComplete="email"
-          autoFocus
+    <div className="access-gate-page login-page">
+      <div className="access-gate-card access-gate-card-wide login-page__card">
+        <header className="login-page__brand">
+          <h1 className="access-gate-title login-page__title">The Finals Customs</h1>
+          <p className="access-gate-help login-page__lead">Sign in with Discord, Google (coming soon), or email.</p>
+        </header>
+
+        <AuthOAuthButtons
+          setError={setError}
+          setBusy={setBusy}
+          busy={busy}
+          groupLabel="Social sign-in"
         />
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => {
-            setPassword(e.target.value)
-            if (error) setError('')
+
+        <form
+          className="login-page__form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSubmit()
           }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              handleSubmit()
-            }
-          }}
-          placeholder="Password"
-          className="access-auth-input access-auth-password"
-          autoComplete="current-password"
-        />
-        {error && <p className="access-modal-error">{error}</p>}
-        <div className="access-modal-actions access-auth-actions">
-          <button className="randomize-btn" type="button" onClick={handleSubmit} disabled={busy}>
-            Sign in
-          </button>
-          <Link
-            to="/signup"
-            state={from ? { from } : undefined}
-            className="access-mode-toggle-btn"
-            style={{ textAlign: 'center' }}
-          >
-            Need an account? Sign up
-          </Link>
-          <Link
-            to="/check-email"
-            state={{ email: email.trim(), ...(from ? { from } : {}) }}
-            className="access-mode-toggle-btn"
-            style={{ textAlign: 'center' }}
-            onClick={() => {
-              const t = email.trim()
-              if (t) setAuthEmailHint(t)
+        >
+          <div className="login-page__field">
+            <label htmlFor="login-email" className="visually-hidden">
+              Email
+            </label>
+            <span className="login-page__input-affix" aria-hidden="true">
+              <FontAwesomeIcon icon={faEnvelope} className={FA_ICON_CLASS} />
+            </span>
+            <input
+              id="login-email"
+              type="email"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value)
+                if (error) setError('')
+              }}
+              placeholder="Email"
+              className="access-auth-input"
+              autoComplete="email"
+              autoFocus
+              disabled={busy}
+            />
+          </div>
+
+          <AuthPasswordField
+            id="login-password"
+            namePrefix="login-page"
+            value={password}
+            onChange={(e) => {
+              setPassword(e.target.value)
+              if (error) setError('')
             }}
+            autoComplete="current-password"
+            disabled={busy}
+          />
+
+          <button
+            className="login-page__submit"
+            type="submit"
+            disabled={busy}
+            aria-busy={busy}
           >
-            Waiting for confirmation email?
-          </Link>
+            <span>{busy ? 'Signing in…' : 'Sign in'}</span>
+            <FontAwesomeIcon icon={faRightToBracket} className={FA_ICON_CLASS} aria-hidden />
+          </button>
+        </form>
+
+        {error && (
+          <p className="access-modal-error login-page__error" role="alert">
+            <FontAwesomeIcon icon={faCircleExclamation} className={FA_ICON_CLASS} aria-hidden />
+            <span>{error}</span>
+          </p>
+        )}
+
+        <div className="access-modal-actions access-auth-actions login-page__actions">
+          <div className="login-page__footer-links">
+            <Link
+              to="/signup"
+              state={from ? { from } : undefined}
+              className="access-mode-toggle-btn login-page__footer-link"
+            >
+              <FontAwesomeIcon icon={faUserPlus} className={FA_ICON_CLASS} aria-hidden />
+              <span>Need an account? Sign up</span>
+            </Link>
+          </div>
         </div>
       </div>
     </div>

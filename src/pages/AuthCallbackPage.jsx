@@ -5,6 +5,7 @@ import {
   completeAuthRedirect,
   getEmailForAuthHandoff
 } from '../services/authService'
+import { FullPageLoading } from '../components/FullPageLoading'
 
 export function AuthCallbackPage() {
   const navigate = useNavigate()
@@ -32,36 +33,34 @@ export function AuthCallbackPage() {
     }
   }, [navigate])
 
-  return (
-    <div className="access-gate-page">
-      <div className="access-gate-card access-gate-card-wide">
-        <h1 className="access-gate-title">The Finals Customs</h1>
-        {error ? (
-          <>
-            <p className="access-modal-error">{error}</p>
-            <div className="access-modal-actions access-auth-actions">
-              <Link
-                to="/login"
-                state={emailHandoff ? { email: emailHandoff } : undefined}
-                className="randomize-btn"
-                style={{ textAlign: 'center' }}
-              >
-                Sign in
-              </Link>
-              <Link
-                to="/check-email"
-                state={emailHandoff ? { email: emailHandoff } : undefined}
-                className="access-mode-toggle-btn"
-                style={{ textAlign: 'center' }}
-              >
-                Resend confirmation
-              </Link>
-            </div>
-          </>
-        ) : (
-          <p className="access-gate-help">Completing sign-in…</p>
-        )}
+  if (error) {
+    return (
+      <div className="access-gate-page">
+        <div className="access-gate-card access-gate-card-wide">
+          <h1 className="access-gate-title">The Finals Customs</h1>
+          <p className="access-modal-error" role="alert">{error}</p>
+          <div className="access-modal-actions access-auth-actions">
+            <Link
+              to="/login"
+              state={emailHandoff ? { email: emailHandoff } : undefined}
+              className="randomize-btn"
+              style={{ textAlign: 'center' }}
+            >
+              Sign in
+            </Link>
+            <Link
+              to="/check-email"
+              state={emailHandoff ? { email: emailHandoff } : undefined}
+              className="access-mode-toggle-btn"
+              style={{ textAlign: 'center' }}
+            >
+              Resend confirmation
+            </Link>
+          </div>
+        </div>
       </div>
-    </div>
-  )
+    )
+  }
+
+  return <FullPageLoading label="Completing sign in" />
 }

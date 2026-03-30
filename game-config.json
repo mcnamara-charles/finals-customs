@@ -252,6 +252,11 @@
           "name": "Riot Shield",
           "imageFile": "/assets/medium_weapons/riot_shield.png",
           "prob": "auto"
+        },
+        {
+          "name": "Chimera-XB",
+          "imageFile": "/assets/medium_weapons/chimera-xb.png",
+          "prob": "auto"
         }
       ],
       "gadgets": [
@@ -334,6 +339,11 @@
           "name": "Smoke Grenade",
           "imageFile": "/assets/gadgets/smoke_nade.png",
           "prob": "auto"
+        },
+        {
+          "name": "Hover Pad",
+          "imageFile": "/assets/gadgets/hover_pad.png",
+          "prob": "auto"
         }
       ],
       "specializations": [
@@ -350,6 +360,11 @@
         {
           "name": "Healing Beam",
           "imageFile": "/assets/specs/heal_beam.png",
+          "prob": "auto"
+        },
+        {
+          "name": "Shockwave",
+          "imageFile": "/assets/specs/shockwave.png",
           "prob": "auto"
         }
       ]
@@ -613,6 +628,7 @@
       "players_per_team": 8,
       "maps": [
         "bernal__standard",
+        "starlight_hollow__standard",
         "monaco__standard",
         "syshorizon__standard"
       ]
@@ -669,6 +685,7 @@
         "bernal__standard",
         "fangwai_city__standard",
         "fortune_stadium__standard",
+        "starlight_hollow__standard",
         "kyoto__suspended_structures",
         "las_vegas_stadium__standard",
         "nozomi_citadel__standard",

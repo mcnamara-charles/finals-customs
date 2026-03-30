@@ -12,6 +12,8 @@ import {
 
 import { supabase } from '../lib/supabaseClient'
 
+import { FullPageLoading } from '../components/FullPageLoading'
+
 
 
 const POLL_MS = 4000
@@ -76,21 +78,7 @@ export function CheckEmailPage() {
 
   if (!authReady) {
 
-    return (
-
-      <div className="access-gate-page">
-
-        <div className="access-gate-card">
-
-          <h1 className="access-gate-title">The Finals Customs</h1>
-
-          <p className="access-gate-help">Loading…</p>
-
-        </div>
-
-      </div>
-
-    )
+    return <FullPageLoading label="Loading session" />
 
   }
 
@@ -149,11 +137,14 @@ export function CheckEmailPage() {
 
   return (
 
-    <div className="access-gate-page">
+    <div className="access-gate-page login-page check-email-page">
 
-      <div className="access-gate-card access-gate-card-wide">
+      <div className="access-gate-card access-gate-card-wide login-page__card">
 
-        <h1 className="access-gate-title">The Finals Customs</h1>
+        <header className="login-page__brand">
+          <h1 className="access-gate-title login-page__title">The Finals Customs</h1>
+          <p className="access-gate-help login-page__lead">Confirm your email to finish setting up your account.</p>
+        </header>
 
         <p className="access-gate-help">
 
@@ -175,19 +166,29 @@ export function CheckEmailPage() {
 
         ) : (
 
-          <p className="access-modal-error">No email on file. Use sign in from the login page to continue.</p>
+          <p className="access-modal-error login-page__error" role="alert">
+            No email on file. Use sign in from the login page to continue.
+          </p>
 
         )}
 
-        {error && <p className="access-modal-error">{error}</p>}
+        {error && (
+          <p className="access-modal-error login-page__error" role="alert">
+            {error}
+          </p>
+        )}
 
-        {message && <p className="access-gate-help">{message}</p>}
+        {message && (
+          <p className="access-gate-help" role="status">
+            {message}
+          </p>
+        )}
 
-        <div className="access-modal-actions access-auth-actions">
+        <div className="access-modal-actions access-auth-actions login-page__actions">
 
           <button
 
-            className="randomize-btn"
+            className="login-page__submit"
 
             type="button"
 
@@ -195,33 +196,26 @@ export function CheckEmailPage() {
 
             disabled={busy || !email}
 
+            aria-busy={busy}
+
           >
 
             {busy ? 'Sending…' : 'Resend confirmation email'}
 
           </button>
 
-          <Link
-
-            to="/login"
-
-            state={{
-
-              ...(email ? { email } : {}),
-
-              ...(from ? { from } : {})
-
-            }}
-
-            className="access-mode-toggle-btn"
-
-            style={{ textAlign: 'center' }}
-
-          >
-
-            Back to sign in
-
-          </Link>
+          <div className="login-page__footer-links">
+            <Link
+              to="/login"
+              state={{
+                ...(email ? { email } : {}),
+                ...(from ? { from } : {})
+              }}
+              className="access-mode-toggle-btn login-page__footer-link"
+            >
+              Back to sign in
+            </Link>
+          </div>
 
         </div>
 

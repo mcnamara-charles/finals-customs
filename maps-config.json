@@ -59,6 +59,11 @@
       "name": "syshorizon",
       "imageFile": "",
       "prob": "auto"
+    },
+    {
+      "name": "starlight_hollow",
+      "imageFile": "",
+      "prob": "auto"
     }
   ],
   "map_modifiers": {
@@ -297,6 +302,15 @@
         "clear night",
         "sunset",
         "foggy night"
+      ],
+      "prob": "auto"
+    },
+    "starlight_hollow__standard": {
+      "map": "starlight_hollow",
+      "modifier": "standard",
+      "weather": [
+        "sunny day",
+        "dawn"
       ],
       "prob": "auto"
     }

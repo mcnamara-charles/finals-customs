@@ -1,4 +1,5 @@
 import { Navigate, useLocation } from 'react-router-dom'
+import { FullPageLoading } from '../components/FullPageLoading'
 import { useAuth } from './authContext'
 
 export function ProtectedRoute({ children }) {
@@ -6,14 +7,7 @@ export function ProtectedRoute({ children }) {
   const location = useLocation()
 
   if (!authReady) {
-    return (
-      <div className="access-gate-page">
-        <div className="access-gate-card">
-          <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">Loading…</p>
-        </div>
-      </div>
-    )
+    return <FullPageLoading label="Loading session" />
   }
 
   if (!session) {
