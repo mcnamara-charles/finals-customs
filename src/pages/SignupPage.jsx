@@ -1,31 +1,41 @@
 import { useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import {
+  faCircleExclamation,
+  faEnvelope,
+  faRightToBracket,
+  faUser,
+  faUserPlus
+} from '@fortawesome/free-solid-svg-icons'
 import { useAuth } from '../auth/authContext'
-import { clearAuthEmailHint, setAuthEmailHint, signUpWithEmail } from '../services/authService'
+import {
+  clearAuthEmailHint,
+  normalizeUsernameForSignup,
+  setAuthEmailHint,
+  signUpWithEmail
+} from '../services/authService'
+import { normalizeAuthErrorMessage } from '../auth/authErrors'
 import { supabase } from '../lib/supabaseClient'
+import { AuthOAuthButtons } from '../components/AuthOAuthButtons'
+import { AuthPasswordField } from '../components/AuthPasswordField'
+import { FullPageLoading } from '../components/FullPageLoading'
+
+const FA_ICON_CLASS = 'app-fa-icon'
 
 export function SignupPage() {
   const { session, authReady } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const from = location.state?.from
-  const [firstName, setFirstName] = useState('')
-  const [lastName, setLastName] = useState('')
+  const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [passwordRepeat, setPasswordRepeat] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   if (!authReady) {
-    return (
-      <div className="access-gate-page">
-        <div className="access-gate-card">
-          <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">Loading…</p>
-        </div>
-      </div>
-    )
+    return <FullPageLoading label="Loading session" />
   }
 
   if (session) {
@@ -34,24 +44,20 @@ export function SignupPage() {
   }
 
   const handleSubmit = async () => {
+    if (busy) return
     if (!supabase) {
       setError('Supabase is not configured (URL / anon key).')
       return
     }
     setError('')
     const trimmedEmail = email.trim()
-    const fn = firstName.trim()
-    const ln = lastName.trim()
+    const normalizedUser = normalizeUsernameForSignup(username)
     if (!trimmedEmail || !password) {
       setError('Enter email and password.')
       return
     }
-    if (!fn || !ln) {
-      setError('Enter first and last name.')
-      return
-    }
-    if (password !== passwordRepeat) {
-      setError('Passwords do not match.')
+    if (!normalizedUser) {
+      setError('Enter a username (letters, numbers, . _ - only).')
       return
     }
     if (password.length < 8) {
@@ -61,11 +67,9 @@ export function SignupPage() {
     setBusy(true)
     try {
       const { session: newSession } = await signUpWithEmail(trimmedEmail, password, {
-        firstName,
-        lastName
+        username: normalizedUser
       })
       setPassword('')
-      setPasswordRepeat('')
       if (!newSession) {
         setAuthEmailHint(trimmedEmail)
         navigate('/check-email', {
@@ -78,100 +82,123 @@ export function SignupPage() {
       const to = from ? `${from.pathname}${from.search || ''}` : '/'
       navigate(to, { replace: true })
     } catch (err) {
-      setError(err.message || 'Sign up failed.')
+      console.error('[SignupPage] signUpWithEmail failed', err)
+      setError(normalizeAuthErrorMessage(err, 'Sign up failed. Check auth redirect URL settings.'))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div className="access-gate-page">
-      <div className="access-gate-card access-gate-card-wide">
-        <h1 className="access-gate-title">The Finals Customs</h1>
-        <p className="access-gate-help">
-          Create an account. You will join your first group from the dashboard after sign-in.
-        </p>
-        <input
-          type="text"
-          value={firstName}
-          onChange={(e) => {
-            setFirstName(e.target.value)
-            if (error) setError('')
-          }}
-          placeholder="First name"
-          className="access-auth-input"
-          autoComplete="given-name"
-          autoFocus
+    <div className="access-gate-page signup-page">
+      <div className="access-gate-card access-gate-card-wide signup-page__card">
+        <header className="signup-page__brand">
+          <h1 className="access-gate-title signup-page__title">The Finals Customs</h1>
+          <p className="access-gate-help signup-page__lead">
+            Create an account with Discord, Google (coming soon), or email.
+          </p>
+        </header>
+
+        <AuthOAuthButtons
+          setError={setError}
+          setBusy={setBusy}
+          busy={busy}
+          groupLabel="Social sign-up"
         />
-        <input
-          type="text"
-          value={lastName}
-          onChange={(e) => {
-            setLastName(e.target.value)
-            if (error) setError('')
+
+        <form
+          className="signup-page__form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSubmit()
           }}
-          placeholder="Last name"
-          className="access-auth-input"
-          autoComplete="family-name"
-        />
-        <input
-          type="email"
-          value={email}
-          onChange={(e) => {
-            setEmail(e.target.value)
-            if (error) setError('')
-          }}
-          placeholder="Email"
-          className="access-auth-input"
-          autoComplete="email"
-        />
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => {
-            setPassword(e.target.value)
-            if (error) setError('')
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              handleSubmit()
-            }
-          }}
-          placeholder="Password"
-          className="access-auth-input access-auth-password"
-          autoComplete="new-password"
-        />
-        <input
-          type="password"
-          value={passwordRepeat}
-          onChange={(e) => {
-            setPasswordRepeat(e.target.value)
-            if (error) setError('')
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              handleSubmit()
-            }
-          }}
-          placeholder="Repeat password"
-          className="access-auth-input access-auth-password"
-          autoComplete="new-password"
-        />
-        {error && <p className="access-modal-error">{error}</p>}
-        <div className="access-modal-actions access-auth-actions">
-          <button className="randomize-btn" type="button" onClick={handleSubmit} disabled={busy}>
-            Sign up
-          </button>
-          <Link
-            to="/login"
-            state={from ? { from } : undefined}
-            className="access-mode-toggle-btn"
-            style={{ textAlign: 'center' }}
+        >
+          <div className="signup-page__field">
+            <label htmlFor="signup-username" className="visually-hidden">
+              Username
+            </label>
+            <span className="signup-page__input-affix" aria-hidden="true">
+              <FontAwesomeIcon icon={faUser} className={FA_ICON_CLASS} />
+            </span>
+            <input
+              id="signup-username"
+              type="text"
+              value={username}
+              onChange={(e) => {
+                setUsername(e.target.value)
+                if (error) setError('')
+              }}
+              placeholder="Username"
+              className="access-auth-input"
+              autoComplete="username"
+              autoFocus
+              disabled={busy}
+            />
+          </div>
+
+          <div className="signup-page__field">
+            <label htmlFor="signup-email" className="visually-hidden">
+              Email
+            </label>
+            <span className="signup-page__input-affix" aria-hidden="true">
+              <FontAwesomeIcon icon={faEnvelope} className={FA_ICON_CLASS} />
+            </span>
+            <input
+              id="signup-email"
+              type="email"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value)
+                if (error) setError('')
+              }}
+              placeholder="Email"
+              className="access-auth-input"
+              autoComplete="email"
+              disabled={busy}
+            />
+          </div>
+
+          <AuthPasswordField
+            id="signup-password"
+            namePrefix="signup-page"
+            value={password}
+            onChange={(e) => {
+              setPassword(e.target.value)
+              if (error) setError('')
+            }}
+            autoComplete="new-password"
+            disabled={busy}
+          />
+
+          <button
+            className="signup-page__submit"
+            type="submit"
+            disabled={busy}
+            aria-busy={busy}
           >
-            Have an account? Sign in
-          </Link>
+            <span>{busy ? 'Creating account…' : 'Sign up'}</span>
+            <FontAwesomeIcon icon={faUserPlus} className={FA_ICON_CLASS} aria-hidden />
+          </button>
+        </form>
+
+        {error && (
+          <p className="access-modal-error signup-page__error" role="alert">
+            <FontAwesomeIcon icon={faCircleExclamation} className={FA_ICON_CLASS} aria-hidden />
+            <span>{error}</span>
+          </p>
+        )}
+
+        <div className="access-modal-actions access-auth-actions signup-page__actions">
+          <div className="signup-page__footer-links">
+            <Link
+              to="/login"
+              state={from ? { from } : undefined}
+              className="access-mode-toggle-btn signup-page__footer-link"
+            >
+              <FontAwesomeIcon icon={faRightToBracket} className={FA_ICON_CLASS} aria-hidden />
+              <span>Have an account? Sign in</span>
+            </Link>
+          </div>
         </div>
       </div>
     </div>

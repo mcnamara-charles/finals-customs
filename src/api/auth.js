@@ -1,6 +1,6 @@
 import { supabase } from './client.js'
 
-function getAuthCallbackUrl() {
+export function getAuthCallbackUrl() {
   if (typeof window === 'undefined') return undefined
   const configuredBase =
     (import.meta.env.VITE_PUBLIC_APP_URL || import.meta.env.VITE_APP_URL || '').trim()
@@ -38,21 +38,48 @@ export async function signInWithEmail(email, password) {
   return data
 }
 
+export async function signInWithDiscord() {
+  if (!supabase) throw new Error('Supabase is not configured')
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'discord',
+    options: {
+      redirectTo: getAuthCallbackUrl(),
+      skipBrowserRedirect: true,
+      scopes: 'identify email',
+      queryParams: {
+        prompt: 'none',
+      },
+    },
+  })
+  if (error) throw error
+  const url = data?.url
+  if (!url) throw new Error('Could not start Discord sign-in.')
+  window.location.assign(url)
+}
+
+/** @param {string} raw */
+export function normalizeUsernameForSignup(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '')
+}
+
 /**
  * @param {string} email
  * @param {string} password
- * @param {{ firstName: string, lastName: string }} profile
+ * @param {{ username: string }} profile
  */
 export async function signUpWithEmail(email, password, profile) {
   if (!supabase) throw new Error('Supabase is not configured')
+  const username = normalizeUsernameForSignup(profile.username)
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
       emailRedirectTo: getAuthCallbackUrl(),
       data: {
-        first_name: profile.firstName.trim(),
-        last_name: profile.lastName.trim()
+        username
       }
     }
   })

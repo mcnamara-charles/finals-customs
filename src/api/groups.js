@@ -93,7 +93,7 @@ export function normalizeGroupManualStatus(value) {
 /**
  * Active group members from `group_memberships` (RLS applies).
  * @param {string} groupId
- * @returns {Promise<Array<{ user_id: string, role: string, display_name?: string | null, avatar_url?: string | null, manual_status: 'assigned'|'available'|'unavailable' }>>}
+ * @returns {Promise<Array<{ user_id: string, role: string, username?: string | null, display_name?: string | null, avatar_url?: string | null, discord_user_id?: string | null, discord_avatar_hash?: string | null, manual_status: 'assigned'|'available'|'unavailable' }>>}
  */
 export async function fetchGroupMembers(groupId) {
   if (!supabase || !groupId) return []
@@ -110,20 +110,26 @@ export async function fetchGroupMembers(groupId) {
 
   const [{ data: profileRows, error: profileError }, { data: availRows, error: availError }] =
     await Promise.all([
-      supabase.from('profiles').select('user_id, display_name, avatar_url').in('user_id', userIds),
+      supabase
+        .from('profiles')
+        .select('user_id, username, display_name, avatar_url, discord_user_id, discord_avatar_hash')
+        .in('user_id', userIds),
       supabase.from('group_member_availability').select('user_id, manual_status').eq('group_id', groupId)
     ])
 
   if (profileError) throw profileError
   if (availError) throw availError
 
-  /** @type {Map<string, { display_name?: string, avatar_url?: string }>} */
+  /** @type {Map<string, { username?: string, display_name?: string, avatar_url?: string, discord_user_id?: string, discord_avatar_hash?: string }>} */
   const profileMap = new Map()
   for (const p of profileRows || []) {
     if (!p?.user_id) continue
     profileMap.set(p.user_id, {
+      username: p.username || null,
       display_name: p.display_name || null,
-      avatar_url: p.avatar_url || null
+      avatar_url: p.avatar_url || null,
+      discord_user_id: p.discord_user_id || null,
+      discord_avatar_hash: p.discord_avatar_hash || null
     })
   }
 
@@ -229,6 +235,33 @@ export async function removeGroupMember(groupId, userId) {
   const { error } = await supabase.rpc('remove_group_member', {
     p_group_id: groupId,
     p_user_id: userId
+  })
+  if (error) throw error
+}
+
+/**
+ * @param {string} groupId
+ */
+export async function leaveGroup(groupId) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  const { error } = await supabase.rpc('leave_group', {
+    p_group_id: groupId
+  })
+  if (error) throw error
+}
+
+/**
+ * @param {string} groupId
+ * @param {string} newOwnerUserId
+ */
+export async function transferGroupOwnership(groupId, newOwnerUserId) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  if (!newOwnerUserId) throw new Error('Missing new owner id')
+  const { error } = await supabase.rpc('transfer_group_ownership', {
+    p_group_id: groupId,
+    p_new_owner_user_id: newOwnerUserId
   })
   if (error) throw error
 }

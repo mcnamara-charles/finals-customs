@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Confirm your signup</title>
+  </head>
+  <body style="margin:0;padding:0;background:#101216;color:#dfe3f3;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#101216;padding:28px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#1a1a1a;border:1px solid #2f3340;border-radius:14px;overflow:hidden;">
+            <tr>
+              <td style="height:4px;background:#d31f3c;font-size:0;line-height:0;">&nbsp;</td>
+            </tr>
+
+            <tr>
+              <td style="padding:24px 24px 10px 24px;">
+                <p style="margin:0 0 8px 0;color:#a7b0ff;font-size:12px;letter-spacing:0.08em;text-transform:uppercase;font-weight:700;">
+                  The Finals Customs
+                </p>
+                <h1 style="margin:0;color:#ffffff;font-size:26px;line-height:1.2;font-weight:800;">
+                  Confirm your signup
+                </h1>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:6px 24px 0 24px;">
+                <p style="margin:0;color:#d5d8df;font-size:15px;line-height:1.65;">
+                  Welcome to the arena. Confirm your email to activate your account and start building customs.
+                </p>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:22px 24px 0 24px;">
+                <a
+                  href="{{ .ConfirmationURL }}"
+                  style="display:inline-block;background:#d31f3c;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;line-height:1;padding:14px 20px;border-radius:10px;"
+                >
+                  Confirm Email
+                </a>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:18px 24px 0 24px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#242424;border:1px solid #333847;border-radius:10px;">
+                  <tr>
+                    <td style="padding:12px 14px;">
+                      <p style="margin:0 0 6px 0;color:#bcc3cf;font-size:12px;line-height:1.45;">
+                        If the button does not work, paste this link into your browser:
+                      </p>
+                      <p style="margin:0;font-size:12px;line-height:1.6;word-break:break-all;">
+                        <a href="{{ .ConfirmationURL }}" style="color:#a7b0ff;text-decoration:underline;">{{ .ConfirmationURL }}</a>
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:18px 24px 24px 24px;">
+                <p style="margin:0;color:#9ca3af;font-size:12px;line-height:1.55;">
+                  If you did not create this account, you can safely ignore this email.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

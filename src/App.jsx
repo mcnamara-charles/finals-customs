@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useLayoutEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { flushSync } from 'react-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 import './layouts.css'
 import gameConfig from '../game-config.json'
@@ -15,6 +16,13 @@ import {
   setTeamDragTransferData
 } from './features/teamDragDrop/engine'
 import DynamicLayoutRoot from './components/DynamicLayout/DynamicLayoutRoot'
+import { FullPageLoading } from './components/FullPageLoading'
+import { UserSettingsPanel } from './components/UserSettingsPanel'
+import {
+  GroupsDashboardCreateTileSkeleton,
+  GroupsDashboardTileSkeleton,
+  ParticipantsListSkeleton
+} from './components/LoadingSkeletons'
 import { supabase } from './lib/supabaseClient'
 import {
   subscribeToGroupLoadoutChanges,
@@ -24,8 +32,6 @@ import {
 import {
   fetchGroupPersistedState,
   saveGroupPersistedState,
-  fetchUserGroupPersistedState,
-  saveUserGroupPersistedState
 } from './services/stateStore'
 import { signOut as authSignOut } from './services/authService'
 import { useAuth } from './auth/authContext'
@@ -38,6 +44,8 @@ import {
   upsertGroupMemberManualStatus,
   setGroupMemberRole,
   removeGroupMember,
+  leaveGroup,
+  transferGroupOwnership,
   normalizeGroupManualStatus
 } from './services/groupService'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
@@ -47,6 +55,7 @@ import {
   faChevronLeft,
   faChevronRight,
   faCloudSunRain,
+  faCrown,
   faDice,
   faEllipsisVertical,
   faGamepad,
@@ -57,13 +66,105 @@ import {
   faMap,
   faPlus,
   faSliders,
+  faUserShield,
   faXmark
 } from '@fortawesome/free-solid-svg-icons'
 
 const STATE_VERSION = '1.0.0'
 const SETTINGS_ALL_PLAYERS = '__all_players__'
 const SIDEBAR_OVERLAY_BREAKPOINT = 1440
+const SIDEBAR_COLLAPSE_DEFAULT_BREAKPOINT = 800
 const DASHBOARD_SIDEBAR_OVERLAY_BREAKPOINT = 800
+const LOADOUTS_MOBILE_PANEL_BREAKPOINT = 500
+const VIEWPORT_MENU_PAD = 8
+const MENU_TRIGGER_GAP = 4
+
+function clampMainMenuToViewport(menuEl, triggerRect) {
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const pad = VIEWPORT_MENU_PAD
+  const gap = MENU_TRIGGER_GAP
+  const w = menuEl.getBoundingClientRect().width
+  const h = menuEl.scrollHeight
+
+  let left = triggerRect.right
+  left = Math.min(Math.max(left, pad + w), vw - pad)
+
+  let top = triggerRect.bottom + gap
+  let maxHeightPx = undefined
+
+  if (top + h <= vh - pad) {
+    // fits below trigger
+  } else {
+    const topAbove = triggerRect.top - h - gap
+    if (topAbove >= pad) {
+      top = topAbove
+    } else {
+      const spaceBelow = vh - pad - (triggerRect.bottom + gap)
+      const spaceAbove = triggerRect.top - gap - pad
+      if (spaceBelow >= spaceAbove) {
+        top = triggerRect.bottom + gap
+        maxHeightPx = Math.max(0, spaceBelow)
+      } else {
+        top = pad
+        maxHeightPx = Math.max(0, spaceAbove)
+      }
+    }
+  }
+
+  return {
+    left,
+    top,
+    ...(maxHeightPx != null ? { maxHeightPx, overflowY: 'auto' } : {})
+  }
+}
+
+function layoutActionsSubmenuInViewport(subEl, setSubStyle) {
+  if (!subEl) {
+    setSubStyle({})
+    return
+  }
+  const cleared = {
+    left: undefined,
+    right: undefined,
+    marginLeft: undefined,
+    marginRight: undefined,
+    maxHeight: undefined,
+    overflowY: undefined
+  }
+  flushSync(() => setSubStyle(cleared))
+
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const pad = VIEWPORT_MENU_PAD
+  const r1 = subEl.getBoundingClientRect()
+  const needsFlip = r1.right > vw - pad
+  const flipStyle = needsFlip
+    ? { left: 'auto', right: '100%', marginLeft: 0, marginRight: '0.3rem' }
+    : {}
+
+  if (needsFlip) {
+    flushSync(() => setSubStyle({ ...cleared, ...flipStyle }))
+  }
+
+  const r2 = needsFlip ? subEl.getBoundingClientRect() : r1
+  const subH = r2.height
+  let maxH = undefined
+  if (r2.bottom > vh - pad) {
+    maxH = vh - pad - Math.max(pad, r2.top)
+  }
+  if (r2.top < pad) {
+    const capFromTop = r2.bottom - 2 * pad
+    maxH = maxH != null ? Math.min(maxH, capFromTop) : capFromTop
+  }
+  const extra = {}
+  if (maxH != null && maxH < subH - 0.5) {
+    extra.maxHeight = Math.max(0, maxH)
+    extra.overflowY = 'auto'
+  }
+  setSubStyle({ ...cleared, ...flipStyle, ...extra })
+}
+
 const stableSerialize = (value) => {
   const normalize = (input) => {
     if (Array.isArray(input)) {
@@ -144,6 +245,11 @@ const ChevronRightIcon = () => (
 )
 
 const DASHBOARD_MEMBER_CHIP_PREVIEW = 3
+/** Placeholder group tiles (excluding create) while the groups list loads. */
+const DASHBOARD_GROUP_TILE_SKELETON_COUNT = 6
+/** Same pattern as the groups bootstrap effect (`?group=` deep link). */
+const GROUP_UUID_PARAM_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function hashString32(str) {
   let h = 0
@@ -158,33 +264,88 @@ function groupDashboardBannerStyle(groupId) {
   const h1 = h % 360
   const h2 = Math.imul(h, 7919) % 360
   return {
-    background: `linear-gradient(128deg, hsl(${h1} 72% 38%) 0%, hsl(${h2} 58% 24%) 100%)`
+    background: `linear-gradient(128deg, hsl(${h1} 72% var(--app-banner-stop-a)) 0%, hsl(${h2} 58% var(--app-banner-stop-b)) 100%)`
   }
 }
 
 function memberChipColor(userId) {
   const hue = hashString32(userId) % 360
-  return `hsl(${hue} 52% 46%)`
+  return `hsl(${hue} var(--app-member-chip-s) var(--app-member-chip-l))`
 }
 
 /** @param {Array<{ user_id: string }>} memberRows */
-function orderGroupMemberRows(memberRows) {
+function orderGroupMemberRows(memberRows, viewerUserId) {
+  const viewerId = String(viewerUserId || '').trim()
   const byId = new Map()
   for (const r of memberRows || []) {
     if (!r?.user_id) continue
     if (!byId.has(r.user_id)) byId.set(r.user_id, r)
   }
-  return [...byId.values()].sort((a, b) => a.user_id.localeCompare(b.user_id))
+  const roleRank = (role) => {
+    if (role === 'owner') return 0
+    if (role === 'admin') return 1
+    if (role === 'member') return 2
+    return 3
+  }
+  const rowLabel = (row) =>
+    String(row?.username || row?.display_name || '')
+      .trim()
+      .toLowerCase()
+
+  return [...byId.values()].sort((a, b) => {
+    const aIsViewer = viewerId && a.user_id === viewerId
+    const bIsViewer = viewerId && b.user_id === viewerId
+    if (aIsViewer !== bIsViewer) return aIsViewer ? -1 : 1
+
+    const aRoleRank = roleRank(a?.role)
+    const bRoleRank = roleRank(b?.role)
+    if (aRoleRank !== bRoleRank) return aRoleRank - bRoleRank
+
+    if (aRoleRank === 1 || aRoleRank === 2) {
+      const aLabel = rowLabel(a)
+      const bLabel = rowLabel(b)
+      if (aLabel !== bLabel) return aLabel.localeCompare(bLabel)
+    }
+    return a.user_id.localeCompare(b.user_id)
+  })
 }
 
-/** @param {{ avatar_url?: string | null }} row @param {string} label */
+/** @param {string} [handle] display name / username for fallback initials */
+function twoLetterAvatarLabel(handle) {
+  const t = String(handle || '').trim()
+  if (!t) return 'Me'
+  const a = t[0] || ''
+  const b = t.length > 1 ? t[1] : a
+  return (a + b).toUpperCase()
+}
+
+/** @param {string | null | undefined} rawUrl */
+function normalizeAvatarUrl(rawUrl) {
+  const u = String(rawUrl || '').trim()
+  if (!u) return ''
+  return u
+}
+
+/** @param {string | null | undefined} discordUserId @param {string | null | undefined} avatarHash */
+function buildDiscordAvatarUrl(discordUserId, avatarHash) {
+  const userId = String(discordUserId || '').trim()
+  const hash = String(avatarHash || '').trim()
+  if (!userId || !hash) return ''
+  const ext = hash.startsWith('a_') ? 'gif' : 'png'
+  return `https://cdn.discordapp.com/avatars/${userId}/${hash}.${ext}?size=256`
+}
+
+/** @param {{ avatar_url?: string | null, discord_user_id?: string | null, discord_avatar_hash?: string | null }} row @param {string} label */
 function participantAvatarSrc(row, label) {
-  const u = row?.avatar_url
+  const discordAvatar = buildDiscordAvatarUrl(row?.discord_user_id, row?.discord_avatar_hash)
+  if (discordAvatar) return discordAvatar
+  const u = normalizeAvatarUrl(row?.avatar_url)
   if (u) return u
-  return `https://ui-avatars.com/api/?name=${encodeURIComponent(label || 'Member')}&background=2a2a2a&color=ffffff&size=96&bold=true`
+  const initials = twoLetterAvatarLabel(label)
+  return `https://ui-avatars.com/api/?name=${encodeURIComponent(initials)}&background=64748b&color=f8fafc&size=96&bold=true`
 }
 
-/** @param {Array<{ user_id: string, display_name?: string | null }>} memberRows */
+/** @param {Array<{ user_id: string, username?: string | null, display_name?: string | null }>} memberRows */
 function canEditGroupManualStatus({ actorRole, actorUserId, targetUserId, targetMembershipRole }) {
   if (actorUserId === targetUserId) return true
   if (actorRole === 'owner') return true
@@ -221,10 +382,10 @@ function buildGroupMemberLabelMap(memberRows, sessionUserId, selfDisplayName) {
     if (!id) continue
     if (id === sessionUserId) {
       map[id] = selfDisplayName || `You (${id.slice(0, 8)})`
-    } else if (row?.display_name) {
-      map[id] = row.display_name
+    } else if (row?.username || row?.display_name) {
+      map[id] = row.username || row.display_name
     } else {
-      map[id] = `Member · ${id.slice(-6)}`
+      map[id] = 'Member'
     }
   }
   return map
@@ -232,6 +393,7 @@ function buildGroupMemberLabelMap(memberRows, sessionUserId, selfDisplayName) {
 
 function App() {
   const navigate = useNavigate()
+  const { search: locationSearch } = useLocation()
   const { session } = useAuth()
   const [selectedGamemode, setSelectedGamemode] = useState(null)
   const [selectedMapId, setSelectedMapId] = useState(null) // e.g., "bernal__standard"
@@ -251,8 +413,9 @@ function App() {
   const [lockedMap, setLockedMap] = useState(false)
   const [lockedWeather, setLockedWeather] = useState(false)
   const [lockedLoadoutRandomTarget, setLockedLoadoutRandomTarget] = useState(false)
+  const [mobilePanelTab, setMobilePanelTab] = useState('game-options')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
-    () => window.innerWidth < SIDEBAR_OVERLAY_BREAKPOINT
+    () => window.innerWidth < SIDEBAR_COLLAPSE_DEFAULT_BREAKPOINT
   )
   const [isSidebarOverlayMode, setIsSidebarOverlayMode] = useState(
     () => window.innerWidth < SIDEBAR_OVERLAY_BREAKPOINT
@@ -301,17 +464,28 @@ function App() {
   const [lastStableDynamicLayout, setLastStableDynamicLayout] = useState(null)
   const [layoutRefreshNonce, setLayoutRefreshNonce] = useState(0)
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false)
+  const [selfProfileHandle, setSelfProfileHandle] = useState('')
+  const [selfProfileAvatarUrl, setSelfProfileAvatarUrl] = useState('')
+  const [selfDiscordUserId, setSelfDiscordUserId] = useState('')
+  const [selfDiscordAvatarHash, setSelfDiscordAvatarHash] = useState('')
+  const [refreshProfilePictureBusy, setRefreshProfilePictureBusy] = useState(false)
   const [participantActionsMenuUserId, setParticipantActionsMenuUserId] = useState(null)
   const [participantActionsTeamsSubOpen, setParticipantActionsTeamsSubOpen] = useState(false)
   const [participantActionsMenuPosition, setParticipantActionsMenuPosition] = useState(null)
+  const [participantActionsTeamsSubStyle, setParticipantActionsTeamsSubStyle] = useState({})
+  const participantActionsMenuRef = useRef(null)
+  const participantMenuTriggerRectRef = useRef(null)
   const [assignedSlotMenuKey, setAssignedSlotMenuKey] = useState(null)
   const [assignedSlotMenuPosition, setAssignedSlotMenuPosition] = useState(null)
+  const [assignedSlotSubmenuStyle, setAssignedSlotSubmenuStyle] = useState({})
+  const assignedSlotMenuRef = useRef(null)
+  const assignedSlotMenuTriggerRectRef = useRef(null)
+  const [viewportMenuLayoutTick, setViewportMenuLayoutTick] = useState(0)
   const [assignedSlotMenuMoveSubOpen, setAssignedSlotMenuMoveSubOpen] = useState(false)
   const [assignedSlotMenuSwapSubOpen, setAssignedSlotMenuSwapSubOpen] = useState(false)
   const isInitialLoad = useRef(true)
   const skipNextPersistRef = useRef(false)
   const lastGroupPersistedRef = useRef('')
-  const lastUserPersistedRef = useRef('')
   /** Last `activeGroupId` whose persisted-state load finished; reset when the group changes. */
   const lastLoadedGroupIdRef = useRef(null)
   const teamsPanelRef = useRef(null)
@@ -321,10 +495,20 @@ function App() {
   const [teamDnD, setTeamDnD] = useState(null)
   const [teamDnDHover, setTeamDnDHover] = useState(null)
   const [participantsDropHover, setParticipantsDropHover] = useState(false)
+  const [participantsListHasOverflow, setParticipantsListHasOverflow] = useState(false)
   const [linkedParticipantPulseId, setLinkedParticipantPulseId] = useState(null)
   const linkedParticipantPulseTimeoutRef = useRef(null)
+  const participantsListRef = useRef(null)
   const isViewOnlyMode = groupRole === 'member'
   const isDashboardSidebarOverlayMode = viewportWidth < DASHBOARD_SIDEBAR_OVERLAY_BREAKPOINT
+  const useMobilePanelTabs = viewportWidth < LOADOUTS_MOBILE_PANEL_BREAKPOINT
+  const showGameOptionsPanel = !useMobilePanelTabs || mobilePanelTab === 'game-options'
+  const showParticipantsPanel = !useMobilePanelTabs || mobilePanelTab === 'participants'
+  /** Owners/admins use collapsed summary when sidebar is collapsed; members always see full panel. */
+  const sidebarShowsCollapsedChrome = isSidebarCollapsed && !isViewOnlyMode
+  /** Overlay spacer/backdrop and `is-overlay` class apply only for roles that use collapsible overlay sidebar. */
+  const sidebarOverlayChromeVisible =
+    !isViewOnlyMode && isSidebarOverlayMode && !isSidebarCollapsed
 
   const endTeamDnD = useCallback(() => {
     teamDnDRef.current = null
@@ -365,17 +549,71 @@ function App() {
     []
   )
 
+  const loadSelfProfile = useCallback(async () => {
+    const sessionUserId = session?.user?.id
+    if (!sessionUserId || !supabase) {
+      setSelfProfileHandle('')
+      setSelfProfileAvatarUrl('')
+      setSelfDiscordUserId('')
+      setSelfDiscordAvatarHash('')
+      return
+    }
+
+    setSelfProfileHandle('')
+    setSelfProfileAvatarUrl('')
+    setSelfDiscordUserId('')
+    setSelfDiscordAvatarHash('')
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('username, display_name, avatar_url, discord_user_id, discord_avatar_hash')
+      .eq('user_id', sessionUserId)
+      .maybeSingle()
+
+    if (error || !data) return
+    setSelfProfileHandle((data.username || data.display_name || '').trim())
+    setSelfProfileAvatarUrl(normalizeAvatarUrl(data.avatar_url))
+    setSelfDiscordUserId((data.discord_user_id || '').trim())
+    setSelfDiscordAvatarHash((data.discord_avatar_hash || '').trim())
+  }, [session?.user?.id])
+
+  useEffect(() => {
+    loadSelfProfile()
+  }, [loadSelfProfile])
+
   const profileDisplayName = useMemo(() => {
-    const first = (session?.user?.user_metadata?.first_name || '').trim()
-    const last = (session?.user?.user_metadata?.last_name || '').trim()
-    const full = `${first} ${last}`.trim()
-    return full || session?.user?.email || 'Profile'
-  }, [session?.user?.email, session?.user?.user_metadata?.first_name, session?.user?.user_metadata?.last_name])
+    if (selfProfileHandle) return selfProfileHandle
+    const u = (session?.user?.user_metadata?.username || '').trim()
+    if (u) return u
+    const email = session?.user?.email || ''
+    const local = email.includes('@') ? email.split('@')[0] : email
+    return local.trim() || 'Profile'
+  }, [selfProfileHandle, session?.user?.email, session?.user?.user_metadata?.username])
   const profileAvatarUrl = useMemo(() => {
-    const explicitAvatar = session?.user?.user_metadata?.avatar_url
+    const metadataDiscordUserId = session?.user?.user_metadata?.provider_id
+    const metadataDiscordAvatarHash = session?.user?.user_metadata?.avatar
+    const discordAvatar =
+      buildDiscordAvatarUrl(selfDiscordUserId, selfDiscordAvatarHash) ||
+      buildDiscordAvatarUrl(metadataDiscordUserId, metadataDiscordAvatarHash)
+    if (discordAvatar) return discordAvatar
+    const explicitAvatar = normalizeAvatarUrl(
+      selfProfileAvatarUrl ||
+        session?.user?.user_metadata?.avatar_url ||
+        session?.user?.user_metadata?.picture
+    )
     if (explicitAvatar) return explicitAvatar
-    return `https://ui-avatars.com/api/?name=${encodeURIComponent(profileDisplayName)}&background=2a2a2a&color=ffffff&size=96&bold=true`
-  }, [profileDisplayName, session?.user?.user_metadata?.avatar_url])
+    const initials = twoLetterAvatarLabel(profileDisplayName)
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(initials)}&background=64748b&color=f8fafc&size=96&bold=true`
+  }, [
+    profileDisplayName,
+    selfProfileAvatarUrl,
+    selfDiscordUserId,
+    selfDiscordAvatarHash,
+    session?.user?.user_metadata?.provider_id,
+    session?.user?.user_metadata?.avatar,
+    session?.user?.user_metadata?.avatar_url,
+    session?.user?.user_metadata?.picture
+  ])
 
   const pruneInvalidParticipantReferences = useCallback((validIds) => {
     const valid = new Set(validIds)
@@ -435,7 +673,7 @@ function App() {
     (participantId) => {
       if (!participantId) return ''
       if (participantId === session?.user?.id) return profileDisplayName
-      return groupMemberLabels[participantId] || `Member · ${String(participantId).slice(-6)}`
+      return groupMemberLabels[participantId] || 'Member'
     },
     [session?.user?.id, profileDisplayName, groupMemberLabels]
   )
@@ -477,7 +715,7 @@ function App() {
         console.error('[Group] Failed to update manual status:', err)
         try {
           const memberRows = await fetchGroupMembers(activeGroupId)
-          setGroupMemberRoster(orderGroupMemberRows(memberRows))
+          setGroupMemberRoster(orderGroupMemberRows(memberRows, session?.user?.id))
         } catch (_) {
           /* ignore */
         }
@@ -490,11 +728,11 @@ function App() {
     if (!activeGroupId) return
     try {
       const memberRows = await fetchGroupMembers(activeGroupId)
-      setGroupMemberRoster(orderGroupMemberRows(memberRows))
+      setGroupMemberRoster(orderGroupMemberRows(memberRows, session?.user?.id))
     } catch (err) {
       console.error('[Group] Failed to refresh members:', err)
     }
-  }, [activeGroupId])
+  }, [activeGroupId, session?.user?.id])
 
   const handleParticipantMenuSetRole = useCallback(
     async (userId, role) => {
@@ -526,6 +764,45 @@ function App() {
       }
     },
     [activeGroupId, refreshGroupMemberRoster]
+  )
+
+  const handleParticipantMenuLeaveGroup = useCallback(async () => {
+    if (!activeGroupId || !session?.user?.id) return
+    try {
+      await leaveGroup(activeGroupId)
+      setParticipantActionsMenuUserId(null)
+      setParticipantActionsTeamsSubOpen(false)
+      setParticipantActionsMenuPosition(null)
+      setActiveGroupId(null)
+      setGroupRole(null)
+      syncGroupInUrl(null)
+      const list = await fetchMyGroups(session.user.id)
+      setMyGroups(list)
+    } catch (err) {
+      console.error('[Group] Failed to leave group:', err)
+      setGroupsLoadError(err.message || 'Could not leave group.')
+    }
+  }, [activeGroupId, session?.user?.id])
+
+  const handleParticipantMenuMakeNewOwner = useCallback(
+    async (userId) => {
+      if (!activeGroupId || !session?.user?.id || !userId) return
+      try {
+        await transferGroupOwnership(activeGroupId, userId)
+        setParticipantActionsMenuUserId(null)
+        setParticipantActionsTeamsSubOpen(false)
+        setParticipantActionsMenuPosition(null)
+        const [memberRows, nextRole] = await Promise.all([
+          fetchGroupMembers(activeGroupId),
+          fetchRoleInGroup(session.user.id, activeGroupId)
+        ])
+        setGroupMemberRoster(orderGroupMemberRows(memberRows, session.user.id))
+        if (nextRole) setGroupRole(nextRole)
+      } catch (err) {
+        console.error('[Group] Failed to transfer ownership:', err)
+      }
+    },
+    [activeGroupId, session?.user?.id]
   )
 
   useEffect(() => {
@@ -565,7 +842,84 @@ function App() {
     setAssignedSlotMenuPosition(null)
     setAssignedSlotMenuMoveSubOpen(false)
     setAssignedSlotMenuSwapSubOpen(false)
+    setAssignedSlotSubmenuStyle({})
   }, [])
+
+  useEffect(() => {
+    const onResize = () => setViewportMenuLayoutTick((n) => n + 1)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (participantActionsMenuUserId == null) {
+      setParticipantActionsTeamsSubStyle({})
+      return
+    }
+    const menu = participantActionsMenuRef.current
+    const trig = participantMenuTriggerRectRef.current
+    if (!menu || !trig) return
+
+    const clamped = clampMainMenuToViewport(menu, trig)
+    setParticipantActionsMenuPosition((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        top: clamped.top,
+        left: clamped.left,
+        ...(clamped.maxHeightPx != null
+          ? { maxHeight: clamped.maxHeightPx, overflowY: clamped.overflowY }
+          : { maxHeight: undefined, overflowY: undefined })
+      }
+    })
+
+    if (!participantActionsTeamsSubOpen) {
+      setParticipantActionsTeamsSubStyle({})
+      return
+    }
+    const sub = menu.querySelector('.participant-actions-menu__sub')
+    layoutActionsSubmenuInViewport(sub, setParticipantActionsTeamsSubStyle)
+  }, [
+    participantActionsMenuUserId,
+    participantActionsTeamsSubOpen,
+    viewportMenuLayoutTick
+  ])
+
+  useLayoutEffect(() => {
+    if (assignedSlotMenuKey == null) {
+      setAssignedSlotSubmenuStyle({})
+      return
+    }
+    const menu = assignedSlotMenuRef.current
+    const trig = assignedSlotMenuTriggerRectRef.current
+    if (!menu || !trig) return
+
+    const clamped = clampMainMenuToViewport(menu, trig)
+    setAssignedSlotMenuPosition((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        top: clamped.top,
+        left: clamped.left,
+        ...(clamped.maxHeightPx != null
+          ? { maxHeight: clamped.maxHeightPx, overflowY: clamped.overflowY }
+          : { maxHeight: undefined, overflowY: undefined })
+      }
+    })
+
+    const subOpen = assignedSlotMenuMoveSubOpen || assignedSlotMenuSwapSubOpen
+    if (!subOpen) {
+      setAssignedSlotSubmenuStyle({})
+      return
+    }
+    const sub = menu.querySelector('.participant-actions-menu__sub')
+    layoutActionsSubmenuInViewport(sub, setAssignedSlotSubmenuStyle)
+  }, [
+    assignedSlotMenuKey,
+    assignedSlotMenuMoveSubOpen,
+    assignedSlotMenuSwapSubOpen,
+    viewportMenuLayoutTick
+  ])
 
   useEffect(() => {
     if (assignedSlotMenuKey == null) return
@@ -632,8 +986,20 @@ function App() {
     [teamAssignments]
   )
 
-  const gamemodes = Object.keys(gameConfig.gamemodes)
-  const loadoutRandomTargets = ['Weapon', 'Specialization', '2 Gadgets']
+  const gamemodes = useMemo(
+    () =>
+      Object.keys(gameConfig.gamemodes).sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: 'base' })
+      ),
+    []
+  )
+  const loadoutRandomTargets = useMemo(
+    () =>
+      ['Weapon', 'Specialization', '2 Gadgets'].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+      ),
+    []
+  )
 
   const applyPersistedState = useCallback(
     (parsed) => {
@@ -667,7 +1033,6 @@ function App() {
       }
       if (parsed.lockedLoadoutRandomTarget !== undefined)
         setLockedLoadoutRandomTarget(parsed.lockedLoadoutRandomTarget)
-      if (parsed.isSidebarCollapsed !== undefined) setIsSidebarCollapsed(parsed.isSidebarCollapsed)
     },
     [activeGroupId]
   )
@@ -712,15 +1077,12 @@ function App() {
     setGroupsLoadError('')
     setGroupsInitialised(false)
 
-    const uuidRe =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
     ;(async () => {
       try {
-        const params = new URLSearchParams(window.location.search)
+        const params = new URLSearchParams(locationSearch)
         const g = params.get('group')
 
-        if (g && uuidRe.test(g)) {
+        if (g && GROUP_UUID_PARAM_RE.test(g)) {
           const role = await fetchRoleInGroup(session.user.id, g)
           if (cancelled) return
           if (role) {
@@ -759,14 +1121,13 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [session?.user?.id])
+  }, [session?.user?.id, locationSearch])
 
   useEffect(() => {
     isInitialLoad.current = true
     skipNextPersistRef.current = true
     lastGroupPersistedRef.current = ''
-    lastUserPersistedRef.current = ''
-    setIsSidebarCollapsed(false)
+    setIsSidebarCollapsed(window.innerWidth < SIDEBAR_COLLAPSE_DEFAULT_BREAKPOINT)
     setParticipants([])
     setGroupMemberRoster([])
     setGroupMemberLabels({})
@@ -793,16 +1154,13 @@ function App() {
         setGroupMembersReady(false)
       }
       try {
-        const [parsed, userParsed] = await Promise.all([
-          fetchGroupPersistedState(activeGroupId),
-          fetchUserGroupPersistedState(activeGroupId)
-        ])
+        const parsed = await fetchGroupPersistedState(activeGroupId)
         let memberIds = null
         /** @type {Array<{ user_id: string }> | null} */
         let orderedMemberRows = null
         try {
           const memberRows = await fetchGroupMembers(activeGroupId)
-          orderedMemberRows = orderGroupMemberRows(memberRows)
+          orderedMemberRows = orderGroupMemberRows(memberRows, sessionUserId)
           memberIds = orderedMemberRows.map((r) => r.user_id)
           if (!isCancelled) {
             setGroupMemberRoster(orderedMemberRows)
@@ -838,17 +1196,6 @@ function App() {
           if (memberIds) pruneInvalidParticipantReferences(memberIds)
         }
 
-        if (userParsed && typeof userParsed.isSidebarCollapsed === 'boolean') {
-          setIsSidebarCollapsed(userParsed.isSidebarCollapsed)
-        }
-
-        const refCollapsed =
-          userParsed && typeof userParsed.isSidebarCollapsed === 'boolean'
-            ? userParsed.isSidebarCollapsed
-            : parsed && parsed.version === STATE_VERSION && parsed.isSidebarCollapsed !== undefined
-              ? parsed.isSidebarCollapsed
-              : false
-        lastUserPersistedRef.current = stableSerialize({ isSidebarCollapsed: refCollapsed })
       } catch (error) {
         console.error('[State] Error loading persisted state:', error)
       } finally {
@@ -868,7 +1215,7 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only affects labels (labelForParticipant); omit to avoid reloading shared state
   }, [session?.user?.id, activeGroupId, groupRole, pruneInvalidParticipantReferences, applyPersistedState])
 
-  // Save shared state (owners/admins) and per-user prefs for the active group
+  // Save shared state (owners/admins) for the active group.
   useEffect(() => {
     if (isInitialLoad.current) return
     if (!activeGroupId || !groupRole) return
@@ -906,8 +1253,6 @@ function App() {
       playerOverrides
     }
 
-    const userState = { isSidebarCollapsed }
-
     const canWriteShared = groupRole === 'owner' || groupRole === 'admin'
     const sharedSer = stableSerialize(sharedState)
 
@@ -921,16 +1266,6 @@ function App() {
         })
     }
 
-    const userSer = stableSerialize(userState)
-    if (userSer !== lastUserPersistedRef.current) {
-      saveUserGroupPersistedState(activeGroupId, userState)
-        .then(() => {
-          lastUserPersistedRef.current = userSer
-        })
-        .catch((error) => {
-          console.error('[State] Error saving user group state:', error)
-        })
-    }
   }, [
     groupRole,
     activeGroupId,
@@ -942,7 +1277,6 @@ function App() {
     lockedMap,
     lockedWeather,
     lockedLoadoutRandomTarget,
-    isSidebarCollapsed,
     participants,
     teamAssignments,
     lockedParticipants,
@@ -976,7 +1310,7 @@ function App() {
         ])
         if (!isMounted) return
 
-        const orderedRows = orderGroupMemberRows(memberRows)
+        const orderedRows = orderGroupMemberRows(memberRows, userId)
         const memberIds = orderedRows.map((r) => r.user_id)
         setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
         setGroupMemberRoster(orderedRows)
@@ -1014,7 +1348,7 @@ function App() {
       try {
         const memberRows = await fetchGroupMembers(activeGroupId)
         if (!isMounted) return
-        const orderedRows = orderGroupMemberRows(memberRows)
+        const orderedRows = orderGroupMemberRows(memberRows, userId)
         const memberIds = orderedRows.map((r) => r.user_id)
         setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
         setGroupMemberRoster(orderedRows)
@@ -1056,7 +1390,7 @@ function App() {
         }
         const memberRows = await fetchGroupMembers(activeGroupId)
         if (!isMounted) return
-        const orderedRows = orderGroupMemberRows(memberRows)
+        const orderedRows = orderGroupMemberRows(memberRows, userId)
         const memberIds = orderedRows.map((r) => r.user_id)
         setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
         setGroupMemberRoster(orderedRows)
@@ -1116,12 +1450,41 @@ function App() {
     return () => window.removeEventListener('resize', updateSidebarMode)
   }, [])
 
-  useLayoutEffect(() => {
-    // On narrow screens, sidebar starts closed by default.
-    if (isSidebarOverlayMode) {
-      setIsSidebarCollapsed(true)
+  useEffect(() => {
+    if (!useMobilePanelTabs) {
+      setMobilePanelTab('game-options')
     }
-  }, [isSidebarOverlayMode])
+  }, [useMobilePanelTabs])
+
+  useLayoutEffect(() => {
+    // Sidebar default state is width-driven only (not persisted):
+    // open at >= 800px, closed below 800px.
+    setIsSidebarCollapsed(viewportWidth < SIDEBAR_COLLAPSE_DEFAULT_BREAKPOINT)
+  }, [viewportWidth])
+
+  useLayoutEffect(() => {
+    const listEl = participantsListRef.current
+    if (!listEl) return
+
+    const updateOverflowState = () => {
+      const hasOverflow = listEl.scrollHeight > listEl.clientHeight + 1
+      setParticipantsListHasOverflow((prev) => (prev === hasOverflow ? prev : hasOverflow))
+    }
+
+    updateOverflowState()
+
+    let observer = null
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(updateOverflowState)
+      observer.observe(listEl)
+    }
+
+    window.addEventListener('resize', updateOverflowState)
+    return () => {
+      if (observer) observer.disconnect()
+      window.removeEventListener('resize', updateOverflowState)
+    }
+  }, [participants, groupMemberRoster, groupMembersReady, groupMembersError])
 
   useEffect(() => {
     // On narrow dashboard screens, sidebar starts closed by default.
@@ -1132,7 +1495,6 @@ function App() {
 
   useEffect(() => {
     if (!isViewOnlyMode) return
-    setIsSidebarCollapsed(true)
     setIsSettingsModalOpen(false)
     setIsUserSettingsModalOpen(false)
     setIsTeamSettingsModalOpen(false)
@@ -1218,6 +1580,41 @@ function App() {
   const handleOpenUserSettings = () => {
     setIsProfileMenuOpen(false)
     setIsUserSettingsModalOpen(true)
+  }
+
+  const handleRefreshProfilePicture = async () => {
+    if (!supabase || !session?.user?.id || refreshProfilePictureBusy) return
+    setRefreshProfilePictureBusy(true)
+    try {
+      const {
+        data: { user },
+        error
+      } = await supabase.auth.getUser()
+      if (error) throw error
+      const metadata = user?.user_metadata || {}
+      const discordUserId = String(metadata.provider_id || '').trim()
+      const discordAvatarHash = String(metadata.avatar || '').trim()
+      const discordAvatarUrl = buildDiscordAvatarUrl(discordUserId, discordAvatarHash)
+      const fallbackAvatarUrl = normalizeAvatarUrl(metadata.avatar_url || metadata.picture)
+      const resolvedAvatarUrl = discordAvatarUrl || fallbackAvatarUrl || null
+
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({
+          avatar_url: resolvedAvatarUrl,
+          discord_user_id: discordUserId || null,
+          discord_avatar_hash: discordAvatarHash || null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', session.user.id)
+      if (updateError) throw updateError
+      await loadSelfProfile()
+      setIsProfileMenuOpen(false)
+    } catch (err) {
+      console.error('[Profile] Could not refresh profile picture:', err)
+    } finally {
+      setRefreshProfilePictureBusy(false)
+    }
   }
 
   useEffect(() => {
@@ -2438,6 +2835,61 @@ function App() {
     removeOverrideForPlayer(settingsTargetPlayer)
   }
 
+  const createUniformWeightMaps = () => {
+    const nextClassInputs = {}
+    const nextSpecializationInputs = {}
+    const nextWeaponInputs = {}
+    const nextGadgetInputs = {}
+
+    for (const [className, classData] of Object.entries(gameConfig.classes)) {
+      nextClassInputs[className] = '1'
+
+      for (const specialization of classData.specializations || []) {
+        nextSpecializationInputs[`${className}-${specialization.name}`] = '1'
+      }
+
+      for (const weapon of classData.weapons || []) {
+        nextWeaponInputs[`${className}-${weapon.name}`] = '1'
+      }
+
+      for (const gadget of classData.gadgets || []) {
+        nextGadgetInputs[`${className}-${gadget.name}`] = '1'
+      }
+    }
+
+    return {
+      classInputs: nextClassInputs,
+      specializationInputs: nextSpecializationInputs,
+      weaponInputs: nextWeaponInputs,
+      gadgetInputs: nextGadgetInputs
+    }
+  }
+
+  const handleSetAllWeightsToOne = () => {
+    const nextWeightMaps = createUniformWeightMaps()
+
+    if (settingsTargetPlayer === SETTINGS_ALL_PLAYERS) {
+      setClassInputs(nextWeightMaps.classInputs)
+      setSpecializationInputs(nextWeightMaps.specializationInputs)
+      setWeaponInputs(nextWeightMaps.weaponInputs)
+      setGadgetInputs(nextWeightMaps.gadgetInputs)
+      return
+    }
+
+    if (settingsTargetIsReadOnly) return
+
+    setPlayerOverrides((prev) => ({
+      ...prev,
+      [settingsTargetPlayer]: {
+        ...prev[settingsTargetPlayer],
+        classInputs: nextWeightMaps.classInputs,
+        specializationInputs: nextWeightMaps.specializationInputs,
+        weaponInputs: nextWeightMaps.weaponInputs,
+        gadgetInputs: nextWeightMaps.gadgetInputs
+      }
+    }))
+  }
+
   const createRandomWeightMaps = () => {
     const nextClassInputs = {}
     const nextSpecializationInputs = {}
@@ -2538,7 +2990,12 @@ function App() {
 
   const getGadgetWeight = (participant, className, gadgetName) =>
     getNumericWeight(getInputValueForParticipant(participant, 'gadgetInputs', `${className}-${gadgetName}`))
+  const isGadgetForcedDisabledForMode = (className, gadgetName) =>
+    selectedGamemode === 'team_deathmatch' &&
+    className === 'medium' &&
+    gadgetName === 'Defibrillator'
   const isGadgetEnabledForRandomizer = (participant, className, gadgetName) =>
+    !isGadgetForcedDisabledForMode(className, gadgetName) &&
     isEnabledInRandomizer(getEnabledValueForParticipant(participant, 'gadgetEnabled', `${className}-${gadgetName}`))
 
   const formatPercent = (value) => {
@@ -2820,7 +3277,32 @@ function App() {
 
   const modeConfig = getSelectedModeConfig()
   const availableMaps = getAvailableMaps()
+  const sortedAvailableMaps = useMemo(
+    () =>
+      [...availableMaps].sort((a, b) => {
+        const aDetails = getMapDetails(a)
+        const bDetails = getMapDetails(b)
+        const aLabel = aDetails
+          ? `${aDetails.map.replace(/_/g, ' ')} / ${aDetails.modifier}`
+          : a.replace('__', ' / ').replace(/_/g, ' ')
+        const bLabel = bDetails
+          ? `${bDetails.map.replace(/_/g, ' ')} / ${bDetails.modifier}`
+          : b.replace('__', ' / ').replace(/_/g, ' ')
+        return aLabel.localeCompare(bLabel, undefined, {
+          sensitivity: 'base',
+          numeric: true
+        })
+      }),
+    [availableMaps]
+  )
   const selectedMapDetails = getMapDetails(selectedMapId)
+  const sortedWeatherOptions = useMemo(
+    () =>
+      [...(selectedMapDetails?.weather || [])].sort((a, b) =>
+        String(a).localeCompare(String(b), undefined, { sensitivity: 'base', numeric: true })
+      ),
+    [selectedMapDetails?.weather]
+  )
   const unassignedParticipantsCount = useMemo(() => {
     const assignedParticipants = new Set(Object.values(teamAssignments).flat().filter(Boolean))
     return participants.reduce(
@@ -3045,6 +3527,11 @@ function App() {
     []
   )
 
+  const isValidDeepLinkGroup = useMemo(() => {
+    const g = new URLSearchParams(locationSearch).get('group') || ''
+    return Boolean(g && GROUP_UUID_PARAM_RE.test(g))
+  }, [locationSearch])
+
   const renderSelectorOptionCard = ({
     key,
     label,
@@ -3075,18 +3562,12 @@ function App() {
     </div>
   )
 
-  if (!groupsInitialised) {
-    return (
-      <div className="access-gate-page">
-        <div className="access-gate-card">
-          <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">Loading your groups…</p>
-        </div>
-      </div>
-    )
+  if (!groupsInitialised && isValidDeepLinkGroup) {
+    return <FullPageLoading label="Loading group" />
   }
 
   if (!activeGroupId) {
+    const groupsLoading = !groupsInitialised
     return (
       <div className={`groups-dashboard-page ${isDashboardSidebarOverlayMode ? 'sidebar-overlay-mode' : ''}`}>
         {isDashboardSidebarOverlayMode && !isDashboardSidebarCollapsed ? (
@@ -3126,19 +3607,22 @@ function App() {
               placeholder="Enter join code"
               className="access-auth-input groups-dashboard-join-input"
               autoCapitalize="characters"
+              disabled={groupsLoading}
             />
             <button
               type="button"
               className="randomize-btn groups-dashboard-join-btn"
               onClick={handleJoinGroup}
-              disabled={joinBusy || !joinCodeInput.trim()}
+              disabled={groupsLoading || joinBusy || !joinCodeInput.trim()}
             >
               {joinBusy ? 'Joining…' : 'Join group'}
             </button>
           </div>
           <div className="groups-dashboard-settings-placeholder">
             <p className="groups-dashboard-settings-title">Settings</p>
-            <p className="groups-dashboard-settings-hint">Group and account settings will live here.</p>
+            <p className="groups-dashboard-settings-hint">
+              Account settings are in the profile menu. Group settings will live here.
+            </p>
           </div>
           <div className="groups-dashboard-sidebar-footer">
             <div className="profile-menu-wrap profile-menu-wrap-sidebar">
@@ -3160,6 +3644,15 @@ function App() {
                   className="profile-menu-dropdown profile-menu-dropdown-sidebar"
                   role="menu"
                 >
+                  <button
+                    type="button"
+                    className="profile-menu-item"
+                    onClick={handleRefreshProfilePicture}
+                    role="menuitem"
+                    disabled={refreshProfilePictureBusy}
+                  >
+                    {refreshProfilePictureBusy ? 'Refreshing picture…' : 'Refresh profile picture'}
+                  </button>
                   <button
                     type="button"
                     className="profile-menu-item"
@@ -3185,7 +3678,7 @@ function App() {
             </div>
           </div>
         </aside>
-        <main className="groups-dashboard-main">
+        <main className="groups-dashboard-main" aria-busy={groupsLoading}>
           {isDashboardSidebarOverlayMode && isDashboardSidebarCollapsed ? (
             <button
               className="groups-dashboard-sidebar-open-btn"
@@ -3198,6 +3691,11 @@ function App() {
             </button>
           ) : null}
           <h1 className="groups-dashboard-main-title">Dashboard</h1>
+          {groupsLoading ? (
+            <p className="visually-hidden" role="status" aria-live="polite">
+              Loading groups
+            </p>
+          ) : null}
           {groupsLoadError && <p className="access-modal-error">{groupsLoadError}</p>}
           <p className="groups-dashboard-main-help">
             Open a group below, create a new one, or join with a code from the sidebar.
@@ -3266,60 +3764,71 @@ function App() {
             </div>
           )}
           <div className="groups-dashboard-tile-grid">
-            <button
-              type="button"
-              className="groups-dashboard-create-tile"
-              onClick={() => setCreateGroupModalOpen(true)}
-              aria-label="Create group"
-            >
-              <span className="groups-dashboard-create-tile-plus" aria-hidden={true}>
-                <FontAwesomeIcon icon={faPlus} className={FA_ICON_CLASS} />
-              </span>
-            </button>
-            {myGroups.filter((g) => g.name !== 'Default').map((g) => {
-              const memberCount = g.member_count ?? 0
-              const overflow =
-                memberCount > DASHBOARD_MEMBER_CHIP_PREVIEW
-                  ? memberCount - DASHBOARD_MEMBER_CHIP_PREVIEW
-                  : 0
-              return (
+            {groupsLoading ? (
+              <>
+                <GroupsDashboardCreateTileSkeleton />
+                {Array.from({ length: DASHBOARD_GROUP_TILE_SKELETON_COUNT }, (_, i) => (
+                  <GroupsDashboardTileSkeleton key={i} />
+                ))}
+              </>
+            ) : (
+              <>
                 <button
-                  key={g.id}
                   type="button"
-                  className="groups-dashboard-group-tile"
-                  onClick={() => openGroup(g)}
+                  className="groups-dashboard-create-tile"
+                  onClick={() => setCreateGroupModalOpen(true)}
+                  aria-label="Create group"
                 >
-                  <div
-                    className="groups-dashboard-group-tile-banner"
-                    style={groupDashboardBannerStyle(g.id)}
-                    aria-hidden={true}
-                  />
-                  <div className="groups-dashboard-group-tile-body">
-                    {(g.member_preview_user_ids?.length > 0 || overflow > 0) && (
-                      <div className="groups-dashboard-member-chips" aria-hidden={true}>
-                        {(g.member_preview_user_ids || []).map((uid, idx) => (
-                          <span
-                            key={uid}
-                            className="groups-dashboard-member-chip"
-                            style={{
-                              background: memberChipColor(uid),
-                              zIndex: DASHBOARD_MEMBER_CHIP_PREVIEW - idx
-                            }}
-                          />
-                        ))}
-                        {overflow > 0 && (
-                          <span className="groups-dashboard-member-overflow">+{overflow}</span>
-                        )}
-                      </div>
-                    )}
-                    <span className="groups-dashboard-group-tile-name">{g.name}</span>
-                    <span className="groups-dashboard-group-tile-meta">
-                      {g.join_code} · {g.role}
-                    </span>
-                  </div>
+                  <span className="groups-dashboard-create-tile-plus" aria-hidden={true}>
+                    <FontAwesomeIcon icon={faPlus} className={FA_ICON_CLASS} />
+                  </span>
                 </button>
-              )
-            })}
+                {myGroups.filter((g) => g.name !== 'Default').map((g) => {
+                  const memberCount = g.member_count ?? 0
+                  const overflow =
+                    memberCount > DASHBOARD_MEMBER_CHIP_PREVIEW
+                      ? memberCount - DASHBOARD_MEMBER_CHIP_PREVIEW
+                      : 0
+                  return (
+                    <button
+                      key={g.id}
+                      type="button"
+                      className="groups-dashboard-group-tile"
+                      onClick={() => openGroup(g)}
+                    >
+                      <div
+                        className="groups-dashboard-group-tile-banner"
+                        style={groupDashboardBannerStyle(g.id)}
+                        aria-hidden={true}
+                      />
+                      <div className="groups-dashboard-group-tile-body">
+                        {(g.member_preview_user_ids?.length > 0 || overflow > 0) && (
+                          <div className="groups-dashboard-member-chips" aria-hidden={true}>
+                            {(g.member_preview_user_ids || []).map((uid, idx) => (
+                              <span
+                                key={uid}
+                                className="groups-dashboard-member-chip"
+                                style={{
+                                  background: memberChipColor(uid),
+                                  zIndex: DASHBOARD_MEMBER_CHIP_PREVIEW - idx
+                                }}
+                              />
+                            ))}
+                            {overflow > 0 && (
+                              <span className="groups-dashboard-member-overflow">+{overflow}</span>
+                            )}
+                          </div>
+                        )}
+                        <span className="groups-dashboard-group-tile-name">{g.name}</span>
+                        <span className="groups-dashboard-group-tile-meta">
+                          {g.join_code} · {g.role}
+                        </span>
+                      </div>
+                    </button>
+                  )
+                })}
+              </>
+            )}
           </div>
         </main>
       </div>
@@ -3327,14 +3836,7 @@ function App() {
   }
 
   if (!groupRole) {
-    return (
-      <div className="access-gate-page">
-        <div className="access-gate-card">
-          <h1 className="access-gate-title">The Finals Customs</h1>
-          <p className="access-gate-help">Loading group…</p>
-        </div>
-      </div>
-    )
+    return <FullPageLoading label="Loading group" />
   }
 
   return (
@@ -3403,6 +3905,15 @@ function App() {
                 <button
                   type="button"
                   className="profile-menu-item"
+                  onClick={handleRefreshProfilePicture}
+                  role="menuitem"
+                  disabled={refreshProfilePictureBusy}
+                >
+                  {refreshProfilePictureBusy ? 'Refreshing picture…' : 'Refresh profile picture'}
+                </button>
+                <button
+                  type="button"
+                  className="profile-menu-item"
                   onClick={handleOpenUserSettings}
                   role="menuitem"
                 >
@@ -3424,18 +3935,22 @@ function App() {
 
       <main className="App-main">
         <div className={`app-workspace ${isSidebarOverlayMode ? 'sidebar-overlay-mode' : ''}`}>
-          {!isViewOnlyMode && isSidebarOverlayMode && !isSidebarCollapsed && (
+          {sidebarOverlayChromeVisible ? (
             <div className="sidebar-collapsed-spacer" aria-hidden="true" />
-          )}
-          {!isViewOnlyMode && isSidebarOverlayMode && !isSidebarCollapsed && (
+          ) : null}
+          {sidebarOverlayChromeVisible ? (
             <button
               className="sidebar-overlay-backdrop"
               onClick={() => setIsSidebarCollapsed(true)}
               aria-label="Close sidebar overlay"
               title="Close sidebar overlay"
             />
-          )}
-          <aside className={`app-sidebar ${isSidebarCollapsed || isViewOnlyMode ? 'is-collapsed' : ''} ${isSidebarOverlayMode && !isSidebarCollapsed && !isViewOnlyMode ? 'is-overlay' : ''}`}>
+          ) : null}
+          <aside
+            className={`app-sidebar ${sidebarShowsCollapsedChrome ? 'is-collapsed' : ''} ${
+              sidebarOverlayChromeVisible ? 'is-overlay' : ''
+            }`}
+          >
             {!isViewOnlyMode &&
               (isSidebarCollapsed ? (
                 <button
@@ -3460,7 +3975,7 @@ function App() {
                   </button>
                 </div>
               ))}
-            {isSidebarCollapsed || isViewOnlyMode ? (
+            {sidebarShowsCollapsedChrome ? (
               <div className="sidebar-collapsed-summary">
                 <div className="collapsed-summary-item">
                   <div className="collapsed-summary-meta">
@@ -3505,7 +4020,97 @@ function App() {
               </div>
             ) : (
               <>
+            {useMobilePanelTabs ? (
+              <div className="mobile-panel-toggle" role="tablist" aria-label="Loadouts panel sections">
+                <button
+                  type="button"
+                  className={`mobile-panel-toggle__btn ${
+                    mobilePanelTab === 'game-options' ? 'is-active' : ''
+                  }`}
+                  onClick={() => setMobilePanelTab('game-options')}
+                  role="tab"
+                  aria-selected={mobilePanelTab === 'game-options'}
+                >
+                  Game Options
+                </button>
+                <button
+                  type="button"
+                  className={`mobile-panel-toggle__btn ${
+                    mobilePanelTab === 'participants' ? 'is-active' : ''
+                  }`}
+                  onClick={() => setMobilePanelTab('participants')}
+                  role="tab"
+                  aria-selected={mobilePanelTab === 'participants'}
+                >
+                  Participants
+                </button>
+              </div>
+            ) : null}
+            {showGameOptionsPanel ? (
+              <div className="mobile-panel-section mobile-panel-section--game-options">
             {/* Game Mode, Map, and Weather Selectors */}
+            {isViewOnlyMode ? (
+            <div className="selectors-row selectors-row--read-only">
+              <div className="selector-group">
+                <span className="selector-group__label">Game Mode:</span>
+                <div className="selector-readonly-row">
+                  <span className="selector-readonly-value">{getGamemodeDisplayName(selectedGamemode)}</span>
+                  <span
+                    className={`selector-readonly-lock ${lockedGamemode ? 'is-locked' : ''}`}
+                    title={lockedGamemode ? 'Locked' : 'Unlocked'}
+                    aria-label={lockedGamemode ? 'Locked' : 'Unlocked'}
+                  >
+                    {lockedGamemode ? <LockIcon /> : <UnlockIcon />}
+                  </span>
+                </div>
+              </div>
+              <div className="selector-group">
+                <span className="selector-group__label">Map:</span>
+                <div className="selector-readonly-row">
+                  <span className="selector-readonly-value">
+                    {selectedMapId ? getMapDisplayName() : '--'}
+                  </span>
+                  <span
+                    className={`selector-readonly-lock ${lockedMap ? 'is-locked' : ''}`}
+                    title={lockedMap ? 'Locked' : 'Unlocked'}
+                    aria-label={lockedMap ? 'Locked' : 'Unlocked'}
+                  >
+                    {lockedMap ? <LockIcon /> : <UnlockIcon />}
+                  </span>
+                </div>
+              </div>
+              <div className="selector-group">
+                <span className="selector-group__label">Weather/Modifier:</span>
+                <div className="selector-readonly-row">
+                  <span className="selector-readonly-value">
+                    {selectedMapDetails && selectedWeather
+                      ? `${selectedMapDetails.modifier} / ${selectedWeather}`
+                      : '--'}
+                  </span>
+                  <span
+                    className={`selector-readonly-lock ${lockedWeather ? 'is-locked' : ''}`}
+                    title={lockedWeather ? 'Locked' : 'Unlocked'}
+                    aria-label={lockedWeather ? 'Locked' : 'Unlocked'}
+                  >
+                    {lockedWeather ? <LockIcon /> : <UnlockIcon />}
+                  </span>
+                </div>
+              </div>
+              <div className="selector-group">
+                <span className="selector-group__label">Change Up:</span>
+                <div className="selector-readonly-row">
+                  <span className="selector-readonly-value">{selectedLoadoutRandomTarget || '--'}</span>
+                  <span
+                    className={`selector-readonly-lock ${lockedLoadoutRandomTarget ? 'is-locked' : ''}`}
+                    title={lockedLoadoutRandomTarget ? 'Locked' : 'Unlocked'}
+                    aria-label={lockedLoadoutRandomTarget ? 'Locked' : 'Unlocked'}
+                  >
+                    {lockedLoadoutRandomTarget ? <LockIcon /> : <UnlockIcon />}
+                  </span>
+                </div>
+              </div>
+            </div>
+            ) : (
             <div className="selectors-row">
               {/* Game Mode Selector */}
               <div className="selector-group">
@@ -3563,7 +4168,7 @@ function App() {
                     disabled={lockedMap || !selectedGamemode}
                   >
                     <option value="">-- Select a map --</option>
-                    {availableMaps.map(mapId => {
+                    {sortedAvailableMaps.map(mapId => {
                       const mapDetails = getMapDetails(mapId)
                       const displayName = mapDetails 
                         ? `${mapDetails.map.replace(/_/g, ' ')} - ${mapDetails.modifier}`
@@ -3611,7 +4216,7 @@ function App() {
                     disabled={lockedWeather || !selectedMapId}
                   >
                     <option value="">-- Select weather --</option>
-                    {selectedMapDetails?.weather?.map(weather => (
+                    {sortedWeatherOptions.map(weather => (
                       <option key={weather} value={weather}>
                         {selectedMapDetails.modifier} / {weather}
                       </option>
@@ -3675,9 +4280,10 @@ function App() {
                 </div>
               </div>
             </div>
+            )}
 
             {/* Randomize Buttons */}
-            {selectedGamemode && participants.length > 0 && (
+            {!isViewOnlyMode && selectedGamemode && participants.length > 0 && (
               <div className="randomize-section">
                 <button 
                   className="randomize-btn" 
@@ -3702,36 +4308,43 @@ function App() {
                 </button>
               </div>
             )}
+              </div>
+            ) : null}
 
             {/* Participants Panel */}
-            <div className="participants-panel">
+            {showParticipantsPanel ? (
+            <div className="participants-panel mobile-panel-section mobile-panel-section--participants">
               <div className="participants-header">
                 <h2>Participants</h2>
-                <div className="participants-header-actions">
-                  <button
-                    className="settings-icon-btn"
-                    onClick={() => setIsTeamSettingsModalOpen(true)}
-                    title="Team Settings"
-                    aria-label="Open team settings"
-                  >
-                    <SettingsIcon />
-                  </button>
-                  <button
-                    className="settings-icon-btn"
-                    onClick={() => setIsSettingsModalOpen(true)}
-                    title="Randomizer Overrides"
-                    aria-label="Open randomizer overrides"
-                  >
-                    <OverridesIcon />
-                  </button>
-                </div>
+                {!isViewOnlyMode ? (
+                  <div className="participants-header-actions">
+                    <button
+                      className="settings-icon-btn"
+                      onClick={() => setIsTeamSettingsModalOpen(true)}
+                      title="Team Settings"
+                      aria-label="Open team settings"
+                    >
+                      <SettingsIcon />
+                    </button>
+                    <button
+                      className="settings-icon-btn"
+                      onClick={() => setIsSettingsModalOpen(true)}
+                      title="Randomizer Overrides"
+                      aria-label="Open randomizer overrides"
+                    >
+                      <OverridesIcon />
+                    </button>
+                  </div>
+                ) : null}
               </div>
               <div
+                ref={participantsListRef}
                 className={[
                   'participants-list',
                   (participantsDropHover || participantsListPoolReplacePreview) &&
                     'participants-list--drop-target',
-                  participantsListPoolReplacePreview && 'participants-list--drop-target--replace'
+                  participantsListPoolReplacePreview && 'participants-list--drop-target--replace',
+                  participantsListHasOverflow && 'participants-list--has-scrollbar'
                 ]
                   .filter(Boolean)
                   .join(' ')}
@@ -3743,6 +4356,7 @@ function App() {
                     setParticipantActionsMenuUserId(null)
                     setParticipantActionsTeamsSubOpen(false)
                     setParticipantActionsMenuPosition(null)
+                    setParticipantActionsTeamsSubStyle({})
                   }
                 }}
               >
@@ -3751,7 +4365,7 @@ function App() {
                 ) : !groupMembersReady &&
                   participants.length === 0 &&
                   groupMemberRoster.length === 0 ? (
-                  <p className="empty-state">Loading group members…</p>
+                  <ParticipantsListSkeleton />
                 ) : participants.length === 0 ? (
                   <p className="empty-state">
                     No one is in this group yet. Share the join code from the group list so teammates can join.
@@ -3793,13 +4407,23 @@ function App() {
                     const showParticipantMakeMember = groupRole === 'owner' && roleRaw === 'admin'
                     const showParticipantToggleAvail = canEditStatus
                     const showParticipantRemove = canRemoveGroupMemberFromGroup(groupRole, roleRaw)
-                    const showParticipantAddToTeam = teamMenuEntries.length > 0
-                    const hasParticipantRowMenu =
-                      showParticipantMakeAdmin ||
-                      showParticipantMakeMember ||
-                      showParticipantToggleAvail ||
-                      showParticipantRemove ||
-                      showParticipantAddToTeam
+                    const showParticipantAddToTeam = !isViewOnlyMode && teamMenuEntries.length > 0
+                    const isSelfParticipantRow = session?.user?.id === id
+                    const showParticipantLeaveGroup = groupRole !== 'owner' && isSelfParticipantRow
+                    const showParticipantMakeNewOwner =
+                      groupRole === 'owner' && !isSelfParticipantRow && roleRaw !== 'owner'
+                    const showInlineAvailabilityChip = canEditStatus && !isViewOnlyMode
+                    const hasParticipantRowMenu = isViewOnlyMode
+                      ? Boolean(
+                          isSelfParticipantRow && (showParticipantToggleAvail || showParticipantLeaveGroup)
+                        )
+                      : showParticipantMakeAdmin ||
+                        showParticipantMakeNewOwner ||
+                        showParticipantMakeMember ||
+                        showParticipantToggleAvail ||
+                        showParticipantRemove ||
+                        showParticipantAddToTeam ||
+                        showParticipantLeaveGroup
                     return (
                       <div
                         key={id}
@@ -3848,8 +4472,32 @@ function App() {
                               ) : null}
                             </span>
                             <div className="participant-item__badges">
-                              <span className="participant-badge participant-badge--role">{roleLabel}</span>
-                              {canEditStatus && session?.user ? (
+                              <span
+                                className={[
+                                  'participant-badge',
+                                  'participant-badge--role',
+                                  `participant-badge--role-${roleRaw}`
+                                ]
+                                  .filter(Boolean)
+                                  .join(' ')}
+                              >
+                                {roleRaw === 'owner' ? (
+                                  <FontAwesomeIcon
+                                    icon={faCrown}
+                                    className={`${FA_ICON_CLASS} participant-role-icon`}
+                                    aria-hidden
+                                  />
+                                ) : null}
+                                {roleRaw === 'admin' ? (
+                                  <FontAwesomeIcon
+                                    icon={faUserShield}
+                                    className={`${FA_ICON_CLASS} participant-role-icon`}
+                                    aria-hidden
+                                  />
+                                ) : null}
+                                <span>{roleLabel}</span>
+                              </span>
+                              {showInlineAvailabilityChip && session?.user ? (
                                 <button
                                   type="button"
                                   className={[
@@ -3899,7 +4547,7 @@ function App() {
                             </div>
                           </div>
                         </div>
-                        {!isViewOnlyMode && hasParticipantRowMenu ? (
+                        {hasParticipantRowMenu ? (
                           <div
                             className="participant-item__actions-wrap"
                             data-participant-actions-wrap={id}
@@ -3919,13 +4567,14 @@ function App() {
                               aria-label={`Actions for ${label}`}
                               onClick={(e) => {
                                 const triggerRect = e.currentTarget.getBoundingClientRect()
+                                participantMenuTriggerRectRef.current = triggerRect
                                 setParticipantActionsMenuUserId((open) => (open === id ? null : id))
                                 setParticipantActionsTeamsSubOpen(false)
                                 if (participantActionsMenuUserId === id) {
                                   setParticipantActionsMenuPosition(null)
                                 } else {
                                   setParticipantActionsMenuPosition({
-                                    top: triggerRect.bottom + 4,
+                                    top: triggerRect.bottom + MENU_TRIGGER_GAP,
                                     left: triggerRect.right
                                   })
                                 }
@@ -3935,6 +4584,7 @@ function App() {
                             </button>
                             {participantActionsMenuUserId === id ? (
                               <div
+                                ref={participantActionsMenuRef}
                                 className="participant-actions-menu"
                                 id={`participant-row-menu-${id}`}
                                 role="menu"
@@ -3946,7 +4596,14 @@ function App() {
                                         left: `${participantActionsMenuPosition.left}px`,
                                         right: 'auto',
                                         marginTop: 0,
-                                        transform: 'translateX(-100%)'
+                                        transform: 'translateX(-100%)',
+                                        ...(participantActionsMenuPosition.maxHeight != null
+                                          ? {
+                                              maxHeight: participantActionsMenuPosition.maxHeight,
+                                              overflowY:
+                                                participantActionsMenuPosition.overflowY || 'auto'
+                                            }
+                                          : {})
                                       }
                                     : undefined
                                 }
@@ -3969,6 +4626,16 @@ function App() {
                                     onClick={() => handleParticipantMenuSetRole(id, 'member')}
                                   >
                                     Make member
+                                  </button>
+                                ) : null}
+                                {showParticipantMakeNewOwner ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="participant-actions-menu__item participant-actions-menu__item--danger"
+                                    onClick={() => handleParticipantMenuMakeNewOwner(id)}
+                                  >
+                                    Make new owner
                                   </button>
                                 ) : null}
                                 {showParticipantToggleAvail ? (
@@ -4011,6 +4678,7 @@ function App() {
                                       <div
                                         className="participant-actions-menu__sub"
                                         role="presentation"
+                                        style={participantActionsTeamsSubStyle}
                                       >
                                         {teamMenuEntries.map((entry) => (
                                           <button
@@ -4051,6 +4719,16 @@ function App() {
                                     Remove from group
                                   </button>
                                 ) : null}
+                                {showParticipantLeaveGroup ? (
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="participant-actions-menu__item participant-actions-menu__item--danger"
+                                    onClick={handleParticipantMenuLeaveGroup}
+                                  >
+                                    Leave group
+                                  </button>
+                                ) : null}
                               </div>
                             ) : null}
                           </div>
@@ -4061,6 +4739,7 @@ function App() {
                 )}
               </div>
             </div>
+            ) : null}
               </>
             )}
           </aside>
@@ -4324,9 +5003,6 @@ function App() {
                                           targetMembershipRole: membershipRole
                                         })
                                       const assignedUnavailable = isParticipantUnavailableForTeams(assignedPlayer)
-                                      const viewOnlyForAssignedPlayer =
-                                        isViewOnlyMode && session?.user?.id === assignedPlayer
-                                      const canOpenAssignedMenu = !isViewOnlyMode || viewOnlyForAssignedPlayer
                                       const moveEntries = Array.from(
                                         { length: modeConfig.teams },
                                         (_, ti) => {
@@ -4371,7 +5047,8 @@ function App() {
                                         )
                                       })()
                                       const menuOpen = assignedSlotMenuKey === slotMenuKey
-                                      if (!canOpenAssignedMenu) return null
+                                      if (isViewOnlyMode && session?.user?.id !== assignedPlayer)
+                                        return null
 
                                       return (
                                         <div className="player-name-row__actions">
@@ -4416,6 +5093,7 @@ function App() {
                                               onClick={(e) => {
                                                 const triggerRect =
                                                   e.currentTarget.getBoundingClientRect()
+                                                assignedSlotMenuTriggerRectRef.current = triggerRect
                                                 setAssignedSlotMenuKey((open) =>
                                                   open === slotMenuKey ? null : slotMenuKey
                                                 )
@@ -4425,7 +5103,7 @@ function App() {
                                                   setAssignedSlotMenuPosition(null)
                                                 } else {
                                                   setAssignedSlotMenuPosition({
-                                                    top: triggerRect.bottom + 4,
+                                                    top: triggerRect.bottom + MENU_TRIGGER_GAP,
                                                     left: triggerRect.right
                                                   })
                                                 }
@@ -4435,6 +5113,7 @@ function App() {
                                             </button>
                                             {menuOpen ? (
                                               <div
+                                                ref={assignedSlotMenuRef}
                                                 className="participant-actions-menu"
                                                 id={`assigned-slot-menu-${slotMenuKey}`}
                                                 role="menu"
@@ -4446,12 +5125,21 @@ function App() {
                                                         left: `${assignedSlotMenuPosition.left}px`,
                                                         right: 'auto',
                                                         marginTop: 0,
-                                                        transform: 'translateX(-100%)'
+                                                        transform: 'translateX(-100%)',
+                                                        ...(assignedSlotMenuPosition.maxHeight != null
+                                                          ? {
+                                                              maxHeight:
+                                                                assignedSlotMenuPosition.maxHeight,
+                                                              overflowY:
+                                                                assignedSlotMenuPosition.overflowY ||
+                                                                'auto'
+                                                            }
+                                                          : {})
                                                       }
                                                     : undefined
                                                 }
                                               >
-                                                {((isViewOnlyMode && viewOnlyForAssignedPlayer) || (!isViewOnlyMode && canEditAssignedManualStatus)) ? (
+                                                {isViewOnlyMode || canEditAssignedManualStatus ? (
                                                   <button
                                                     type="button"
                                                     role="menuitem"
@@ -4511,6 +5199,7 @@ function App() {
                                                     <div
                                                       className="participant-actions-menu__sub"
                                                       role="presentation"
+                                                      style={assignedSlotSubmenuStyle}
                                                     >
                                                       {moveEntries.map((entry) => (
                                                         <button
@@ -4615,55 +5304,58 @@ function App() {
                                                     Clear loadout
                                                   </button>
                                                 ) : null}
-                                                <div className="participant-actions-menu__sub-host">
-                                                  <button
-                                                    type="button"
-                                                    role="menuitem"
-                                                    className="participant-actions-menu__item participant-actions-menu__item--with-chevron"
-                                                    aria-haspopup="true"
-                                                    aria-expanded={
-                                                      assignedSlotMenuSwapSubOpen && menuOpen
-                                                    }
-                                                    disabled={swapIds.length === 0}
-                                                    title={
-                                                      swapIds.length === 0
-                                                        ? 'No other assigned players with a loadout'
-                                                        : undefined
-                                                    }
-                                                    onClick={() => {
-                                                      if (swapIds.length === 0) return
-                                                      setAssignedSlotMenuSwapSubOpen((s) => !s)
-                                                      setAssignedSlotMenuMoveSubOpen(false)
-                                                    }}
-                                                  >
-                                                    <span>Swap loadout</span>
-                                                    <ChevronRightIcon />
-                                                  </button>
-                                                  {assignedSlotMenuSwapSubOpen ? (
-                                                    <div
-                                                      className="participant-actions-menu__sub"
-                                                      role="presentation"
+                                                {!isViewOnlyMode ? (
+                                                  <div className="participant-actions-menu__sub-host">
+                                                    <button
+                                                      type="button"
+                                                      role="menuitem"
+                                                      className="participant-actions-menu__item participant-actions-menu__item--with-chevron"
+                                                      aria-haspopup="true"
+                                                      aria-expanded={
+                                                        assignedSlotMenuSwapSubOpen && menuOpen
+                                                      }
+                                                      disabled={swapIds.length === 0}
+                                                      title={
+                                                        swapIds.length === 0
+                                                          ? 'No other assigned players with a loadout'
+                                                          : undefined
+                                                      }
+                                                      onClick={() => {
+                                                        if (swapIds.length === 0) return
+                                                        setAssignedSlotMenuSwapSubOpen((s) => !s)
+                                                        setAssignedSlotMenuMoveSubOpen(false)
+                                                      }}
                                                     >
-                                                      {swapIds.map((otherId) => (
-                                                        <button
-                                                          key={otherId}
-                                                          type="button"
-                                                          role="menuitem"
-                                                          className="participant-actions-menu__item participant-actions-menu__sub-item"
-                                                          onClick={() => {
-                                                            handleSwapPlayerLoadouts(
-                                                              assignedPlayer,
-                                                              otherId
-                                                            )
-                                                            closeAssignedSlotMenu()
-                                                          }}
-                                                        >
-                                                          {labelForParticipant(otherId)}
-                                                        </button>
-                                                      ))}
-                                                    </div>
-                                                  ) : null}
-                                                </div>
+                                                      <span>Swap loadout</span>
+                                                      <ChevronRightIcon />
+                                                    </button>
+                                                    {assignedSlotMenuSwapSubOpen ? (
+                                                      <div
+                                                        className="participant-actions-menu__sub"
+                                                        role="presentation"
+                                                        style={assignedSlotSubmenuStyle}
+                                                      >
+                                                        {swapIds.map((otherId) => (
+                                                          <button
+                                                            key={otherId}
+                                                            type="button"
+                                                            role="menuitem"
+                                                            className="participant-actions-menu__item participant-actions-menu__sub-item"
+                                                            onClick={() => {
+                                                              handleSwapPlayerLoadouts(
+                                                                assignedPlayer,
+                                                                otherId
+                                                              )
+                                                              closeAssignedSlotMenu()
+                                                            }}
+                                                          >
+                                                            {labelForParticipant(otherId)}
+                                                          </button>
+                                                        ))}
+                                                      </div>
+                                                    ) : null}
+                                                  </div>
+                                                ) : null}
                                               </div>
                                             ) : null}
                                           </div>
@@ -4964,17 +5656,28 @@ function App() {
 
       {isUserSettingsModalOpen && (
         <div className="modal-overlay" onClick={() => setIsUserSettingsModalOpen(false)}>
-          <div className="modal-content user-settings-modal" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-content user-settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="user-settings-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="modal-header">
-              <h2>User settings</h2>
+              <h2 id="user-settings-modal-title">User settings</h2>
               <button className="modal-close-btn" onClick={() => setIsUserSettingsModalOpen(false)} aria-label="Close modal">
                 <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
               </button>
             </div>
-            <div className="modal-body">
-              <p className="groups-dashboard-settings-hint">
-                User profile and preferences will live here.
-              </p>
+            <div className="modal-body user-settings-modal-body">
+              {session?.user?.id ? (
+                <UserSettingsPanel
+                  userId={session.user.id}
+                  initialUsername={profileDisplayName}
+                  currentEmail={session.user.email || ''}
+                  onProfileUpdated={loadSelfProfile}
+                />
+              ) : null}
             </div>
           </div>
         </div>
@@ -5016,13 +5719,20 @@ function App() {
                     <option
                       key={id}
                       value={id}
-                      style={hasOverride ? undefined : { color: '#8b8b8b' }}
+                      style={hasOverride ? undefined : { color: 'var(--app-select-option-muted)' }}
                     >
                       {hasOverride ? label : `${label} (default weights)`}
                     </option>
                   )
                 })}
               </select>
+              <button
+                className="settings-override-set-all-btn"
+                onClick={handleSetAllWeightsToOne}
+                disabled={settingsTargetIsReadOnly}
+              >
+                Set All 1
+              </button>
               <button
                 className="settings-override-delete-btn"
                 onClick={handleDeleteSelectedOverride}
@@ -5129,11 +5839,15 @@ function App() {
                                 disabled={settingsTargetIsReadOnly}
                               />
                             </label>
-                            <img
-                              src={specialization.imageFile}
-                              alt={specialization.name}
-                              className="spec-image"
-                            />
+                            {specialization.imageFile ? (
+                              <img
+                                src={specialization.imageFile}
+                                alt={specialization.name}
+                                className="spec-image"
+                              />
+                            ) : (
+                              <span className="loadout-item-text">{specialization.name}</span>
+                            )}
                           </div>
                           <div className={`loadout-item-label ${getLoadoutLabelClass(specialization.name)}`}>
                             <em>{specialization.name}</em>
@@ -5200,11 +5914,15 @@ function App() {
                                 disabled={settingsTargetIsReadOnly}
                               />
                             </label>
-                            <img
-                              src={weapon.imageFile}
-                              alt={weapon.name}
-                              className="weapon-image"
-                            />
+                            {weapon.imageFile ? (
+                              <img
+                                src={weapon.imageFile}
+                                alt={weapon.name}
+                                className="weapon-image"
+                              />
+                            ) : (
+                              <span className="loadout-item-text">{weapon.name}</span>
+                            )}
                           </div>
                           <div className={`loadout-item-label ${getLoadoutLabelClass(weapon.name)}`}>
                             <em>{weapon.name}</em>
@@ -5251,31 +5969,38 @@ function App() {
                     {className.charAt(0).toUpperCase() + className.slice(1)}
                   </div>
                   <div className="weapons-settings-grid">
-                    {gadgets.map((gadget) => (
-                      <div className={`weapon-settings-card ${getDisplayEnabledValue('gadgetEnabled', gadget.key) ? '' : 'disabled'}`} key={gadget.key}>
+                    {gadgets.map((gadget) => {
+                      const isModeForcedDisabled = isGadgetForcedDisabledForMode(className, gadget.name)
+                      const isGadgetEnabled = getDisplayEnabledValue('gadgetEnabled', gadget.key)
+                      return (
+                      <div className={`weapon-settings-card ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'disabled'}`} key={gadget.key}>
                         <div className="loadout-item-wrapper settings-weapon-wrapper">
                           <div
-                            className={`loadout-item gadget-item settings-weapon-preview ${getDisplayEnabledValue('gadgetEnabled', gadget.key) ? '' : 'disabled'}`}
+                            className={`loadout-item gadget-item settings-weapon-preview ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'disabled'}`}
                             onClick={() => {
-                              if (!settingsTargetIsReadOnly) {
-                                updateSettingsMapValue('gadgetEnabled', gadget.key, !getDisplayEnabledValue('gadgetEnabled', gadget.key))
+                              if (!settingsTargetIsReadOnly && !isModeForcedDisabled) {
+                                updateSettingsMapValue('gadgetEnabled', gadget.key, !isGadgetEnabled)
                               }
                             }}
                           >
                             <label className="weapon-enable-checkbox" title="Enable/disable this gadget in randomizer">
                               <input
                                 type="checkbox"
-                                checked={getDisplayEnabledValue('gadgetEnabled', gadget.key)}
+                                checked={!isModeForcedDisabled && isGadgetEnabled}
                                 onChange={(e) => updateSettingsMapValue('gadgetEnabled', gadget.key, e.target.checked)}
                                 onClick={(e) => e.stopPropagation()}
-                                disabled={settingsTargetIsReadOnly}
+                                disabled={settingsTargetIsReadOnly || isModeForcedDisabled}
                               />
                             </label>
-                            <img
-                              src={gadget.imageFile}
-                              alt={gadget.name}
-                              className="gadget-image"
-                            />
+                            {gadget.imageFile ? (
+                              <img
+                                src={gadget.imageFile}
+                                alt={gadget.name}
+                                className="gadget-image"
+                              />
+                            ) : (
+                              <span className="loadout-item-text">{gadget.name}</span>
+                            )}
                           </div>
                           <div className={`loadout-item-label ${getLoadoutLabelClass(gadget.name)}`}>
                             <em>{gadget.name}</em>
@@ -5296,7 +6021,7 @@ function App() {
                             disabled={settingsTargetIsReadOnly}
                           />
                           <span
-                            className={`settings-weight-percent ${getDisplayEnabledValue('gadgetEnabled', gadget.key) ? '' : 'is-zero'}`}
+                            className={`settings-weight-percent ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'is-zero'}`}
                             title="Weight share among enabled items"
                           >
                             {formatPercent(
@@ -5310,7 +6035,7 @@ function App() {
                           </span>
                         </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </section>
               ))}

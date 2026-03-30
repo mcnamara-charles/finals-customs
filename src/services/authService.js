@@ -1,8 +1,10 @@
 import {
   completeAuthRedirect,
   getSession,
+  normalizeUsernameForSignup,
   onAuthStateChange,
   resendSignupConfirmation,
+  signInWithDiscord,
   signInWithEmail,
   signOutFromSupabase,
   signUpWithEmail
@@ -62,7 +64,16 @@ export function getEmailForAuthHandoff() {
   return getAuthEmailHint()
 }
 
-export { getSession, onAuthStateChange, signInWithEmail, signUpWithEmail, resendSignupConfirmation, completeAuthRedirect }
+export {
+  completeAuthRedirect,
+  getSession,
+  normalizeUsernameForSignup,
+  onAuthStateChange,
+  resendSignupConfirmation,
+  signInWithDiscord,
+  signInWithEmail,
+  signUpWithEmail
+}
 
 export async function signOut() {
   await signOutFromSupabase()

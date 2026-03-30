@@ -7,6 +7,8 @@ export {
   upsertGroupMemberManualStatus,
   setGroupMemberRole,
   removeGroupMember,
+  leaveGroup,
+  transferGroupOwnership,
   GROUP_MANUAL_STATUSES,
   normalizeGroupManualStatus
 } from '../api/groups.js'
