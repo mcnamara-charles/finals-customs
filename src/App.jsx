@@ -3864,6 +3864,15 @@ function App() {
         teamAssignments[teamDnDHover.teamIndex]?.[teamDnDHover.slotIndex] || null,
       maxPerTeam: modeConfig.players_per_team
     }) === 'replace'
+  const participantsSortedForPanel = useMemo(() => {
+    if (participants.length <= 1) return participants
+    return [...participants].sort((a, b) => {
+      const aUnavailable = isParticipantUnavailableForTeams(a)
+      const bUnavailable = isParticipantUnavailableForTeams(b)
+      if (aUnavailable === bUnavailable) return 0
+      return aUnavailable ? 1 : -1
+    })
+  }, [participants, isParticipantUnavailableForTeams])
   useEffect(() => {
     if (!isDynamicLayoutMode) {
       setDynamicLayoutRuntimeMetrics({
@@ -5748,7 +5757,7 @@ function App() {
                     No one is in this group yet. Share the join code from the group list so teammates can join.
                   </p>
                 ) : (
-                  participants.map((id) => {
+                  participantsSortedForPanel.map((id) => {
                     const row = groupMemberRosterById.get(id)
                     const label = labelForParticipant(id)
                     const isAssigned = assignedParticipantIdSet.has(id)

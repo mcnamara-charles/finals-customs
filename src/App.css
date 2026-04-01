@@ -926,6 +926,12 @@ h1 {
   color: var(--app-text-dim);
 }
 
+.participant-item--unavailable {
+  background-color: var(--app-surface-input);
+  background-image: linear-gradient(rgba(0, 0, 0, 0.23), rgba(0, 0, 0, 0.17));
+  background-blend-mode: multiply;
+}
+
 .participant-item__main {
   display: flex;
   align-items: center;
