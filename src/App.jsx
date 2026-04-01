@@ -74,7 +74,6 @@ import {
   faUnlock,
   faMap,
   faPlus,
-  faSliders,
   faUserShield,
   faXmark
 } from '@fortawesome/free-solid-svg-icons'
@@ -206,10 +205,6 @@ const FA_ICON_CLASS = 'app-fa-icon'
 
 const SettingsIcon = () => (
   <FontAwesomeIcon icon={faGear} className={FA_ICON_CLASS} aria-hidden />
-)
-
-const OverridesIcon = () => (
-  <FontAwesomeIcon icon={faSliders} className={FA_ICON_CLASS} aria-hidden />
 )
 
 const LockIcon = () => (
@@ -503,9 +498,8 @@ function App() {
   const [onlineUserIds, setOnlineUserIds] = useState([])
   const [teamAssignments, setTeamAssignments] = useState({})
   const [lockedParticipants, setLockedParticipants] = useState({}) // { participantName: teamIndex }
-  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
   const [isGroupSettingsModalOpen, setIsGroupSettingsModalOpen] = useState(false)
-  const [groupSettingsActiveTab, setGroupSettingsActiveTab] = useState(GROUP_SETTINGS_TAB_OVERRIDES)
+  const [groupSettingsActiveTab, setGroupSettingsActiveTab] = useState(GROUP_SETTINGS_TAB_TEAM)
   const [rotateInviteBusy, setRotateInviteBusy] = useState(false)
   const [groupGradientColorA, setGroupGradientColorA] = useState('#475569')
   const [groupGradientColorB, setGroupGradientColorB] = useState('#334155')
@@ -1873,7 +1867,6 @@ function App() {
 
   useEffect(() => {
     if (!isViewOnlyMode) return
-    setIsSettingsModalOpen(false)
     setIsUserSettingsModalOpen(false)
     setLoadoutSelector(null)
   }, [isViewOnlyMode])
@@ -2293,11 +2286,7 @@ function App() {
 
   useEffect(() => {
     const isAnyModalOpen =
-      isSettingsModalOpen ||
-      isGroupSettingsModalOpen ||
-      isUserSettingsModalOpen ||
-      createGroupModalOpen ||
-      !!loadoutSelector
+      isGroupSettingsModalOpen || isUserSettingsModalOpen || createGroupModalOpen || !!loadoutSelector
 
     if (!isAnyModalOpen) return
 
@@ -2308,7 +2297,6 @@ function App() {
       document.body.style.overflow = previousOverflow
     }
   }, [
-    isSettingsModalOpen,
     isGroupSettingsModalOpen,
     isUserSettingsModalOpen,
     createGroupModalOpen,
@@ -4670,9 +4658,9 @@ function App() {
   }
 
   const groupSettingsTabs = [
-    { key: GROUP_SETTINGS_TAB_OVERRIDES, label: 'Overrides' },
-    { key: GROUP_SETTINGS_TAB_GROUP, label: 'Group' },
     { key: GROUP_SETTINGS_TAB_TEAM, label: 'Team' },
+    { key: GROUP_SETTINGS_TAB_GROUP, label: 'Group' },
+    { key: GROUP_SETTINGS_TAB_OVERRIDES, label: 'Overrides' },
     { key: GROUP_SETTINGS_TAB_LOADOUTS, label: 'Loadouts' },
     { key: GROUP_SETTINGS_TAB_EVENTS, label: 'Events' }
   ]
@@ -5820,25 +5808,12 @@ function App() {
                     <button
                       className="settings-icon-btn"
                       onClick={() => {
-                        setIsSettingsModalOpen(false)
-                        setGroupSettingsActiveTab(GROUP_SETTINGS_TAB_OVERRIDES)
                         setIsGroupSettingsModalOpen(true)
                       }}
                       title="Group Settings"
                       aria-label="Open group settings"
                     >
                       <SettingsIcon />
-                    </button>
-                    <button
-                      className="settings-icon-btn"
-                      onClick={() => {
-                        setIsGroupSettingsModalOpen(false)
-                        setIsSettingsModalOpen(true)
-                      }}
-                      title="Randomizer Overrides"
-                      aria-label="Open randomizer overrides"
-                    >
-                      <OverridesIcon />
                     </button>
                   </div>
                 ) : null}
@@ -7238,29 +7213,6 @@ function App() {
                 {renderGroupSettingsPanelContent()}
               </section>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Settings Modal */}
-      {isSettingsModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsSettingsModalOpen(false)}>
-          <div className="modal-content settings-page-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header settings-modal-header">
-              <div className="settings-modal-branding">
-                <span className="settings-modal-brand-app">The Finals Customs</span>
-                <span className="settings-modal-brand-group" title={settingsHeaderGroupTitle}>
-                  {settingsHeaderGroupTitle}
-                </span>
-                <h2 id="legacy-settings-modal-title">Settings</h2>
-              </div>
-              <div className="settings-header-actions">
-                <button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)} aria-label="Close modal">
-                  <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
-                </button>
-              </div>
-            </div>
-            {renderOverridesEditorContent()}
           </div>
         </div>
       )}
