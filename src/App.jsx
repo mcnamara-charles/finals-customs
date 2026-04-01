@@ -6,7 +6,6 @@ import './layouts.css'
 import gameConfig from '../game-config.json'
 import mapsConfig from '../maps-config.json'
 import { computeDynamicLayout } from './features/layout/layoutEngine'
-import { isDynamicLayoutModeConfig } from './features/layout/dynamicMode'
 import {
   applyTeamDragDrop,
   firstEmptySlotIndex,
@@ -94,6 +93,7 @@ const GROUP_SETTINGS_TAB_TEAM = 'team'
 const GROUP_SETTINGS_TAB_LOADOUTS = 'loadouts'
 const GROUP_SETTINGS_TAB_EVENTS = 'events'
 const ACTIVE_GROUP_STORAGE_KEY = 'finals_customs.active_group_id'
+const MANUAL_STATUS_OVERRIDE_TTL_MS = 8000
 
 function clampMainMenuToViewport(menuEl, triggerRect) {
   const vw = window.innerWidth
@@ -571,6 +571,8 @@ function App() {
   const groupPersistTimerRef = useRef(null)
   /** Latest debounced snapshot `{ groupId, sharedState, sharedSer }` or null. */
   const groupPersistPendingRef = useRef(null)
+  /** Active save in flight `{ groupId, sharedSer, gen }` or null. */
+  const groupPersistInFlightRef = useRef(null)
   const groupPersistSaveGenRef = useRef(0)
   /** Last `activeGroupId` whose persisted-state load finished; reset when the group changes. */
   const lastLoadedGroupIdRef = useRef(null)
@@ -578,6 +580,7 @@ function App() {
   const profileMenuButtonRef = useRef(null)
   const profileMenuRef = useRef(null)
   const teamDnDRef = useRef(null)
+  const manualStatusOverridesRef = useRef(new Map())
   const [teamDnD, setTeamDnD] = useState(null)
   const [teamDnDHover, setTeamDnDHover] = useState(null)
   const [participantsDropHover, setParticipantsDropHover] = useState(false)
@@ -850,6 +853,34 @@ function App() {
     [groupMemberRosterById]
   )
 
+  const setManualStatusOverride = useCallback((userId, status) => {
+    if (!userId) return
+    manualStatusOverridesRef.current.set(userId, {
+      status: normalizeGroupManualStatus(status),
+      expiresAt: Date.now() + MANUAL_STATUS_OVERRIDE_TTL_MS
+    })
+  }, [])
+
+  const clearManualStatusOverride = useCallback((userId) => {
+    if (!userId) return
+    manualStatusOverridesRef.current.delete(userId)
+  }, [])
+
+  const applyManualStatusOverridesToRows = useCallback((rows) => {
+    const now = Date.now()
+    return (rows || []).map((row) => {
+      const userId = row?.user_id
+      if (!userId) return row
+      const override = manualStatusOverridesRef.current.get(userId)
+      if (!override) return row
+      if (!override.expiresAt || override.expiresAt <= now) {
+        manualStatusOverridesRef.current.delete(userId)
+        return row
+      }
+      return { ...row, manual_status: override.status }
+    })
+  }, [])
+
   const handleGroupManualStatusChange = useCallback(
     async (targetUserId, nextStatus) => {
       if (!activeGroupId || !session?.user?.id) return
@@ -865,6 +896,7 @@ function App() {
         return
       }
       const normalized = normalizeGroupManualStatus(nextStatus)
+      setManualStatusOverride(targetUserId, normalized)
       setGroupMemberRoster((prev) =>
         prev.map((r) => (r.user_id === targetUserId ? { ...r, manual_status: normalized } : r))
       )
@@ -872,26 +904,39 @@ function App() {
         await upsertGroupMemberManualStatus(activeGroupId, targetUserId, normalized)
       } catch (err) {
         console.error('[Group] Failed to update manual status:', err)
+        clearManualStatusOverride(targetUserId)
         try {
           const memberRows = await fetchGroupMembers(activeGroupId)
-          setGroupMemberRoster(orderGroupMemberRows(memberRows, session?.user?.id))
+          setGroupMemberRoster(
+            applyManualStatusOverridesToRows(orderGroupMemberRows(memberRows, session?.user?.id))
+          )
         } catch (_) {
           /* ignore */
         }
       }
     },
-    [activeGroupId, session?.user?.id, groupRole, groupMemberRoster]
+    [
+      activeGroupId,
+      session?.user?.id,
+      groupRole,
+      groupMemberRoster,
+      setManualStatusOverride,
+      clearManualStatusOverride,
+      applyManualStatusOverridesToRows
+    ]
   )
 
   const refreshGroupMemberRoster = useCallback(async () => {
     if (!activeGroupId) return
     try {
       const memberRows = await fetchGroupMembers(activeGroupId)
-      setGroupMemberRoster(orderGroupMemberRows(memberRows, session?.user?.id))
+      setGroupMemberRoster(
+        applyManualStatusOverridesToRows(orderGroupMemberRows(memberRows, session?.user?.id))
+      )
     } catch (err) {
       console.error('[Group] Failed to refresh members:', err)
     }
-  }, [activeGroupId, session?.user?.id])
+  }, [activeGroupId, session?.user?.id, applyManualStatusOverridesToRows])
 
   const handleParticipantMenuSetRole = useCallback(
     async (userId, role) => {
@@ -955,13 +1000,15 @@ function App() {
           fetchGroupMembers(activeGroupId),
           fetchRoleInGroup(session.user.id, activeGroupId)
         ])
-        setGroupMemberRoster(orderGroupMemberRows(memberRows, session.user.id))
+        setGroupMemberRoster(
+          applyManualStatusOverridesToRows(orderGroupMemberRows(memberRows, session.user.id))
+        )
         if (nextRole) setGroupRole(nextRole)
       } catch (err) {
         console.error('[Group] Failed to transfer ownership:', err)
       }
     },
-    [activeGroupId, session?.user?.id]
+    [activeGroupId, session?.user?.id, applyManualStatusOverridesToRows]
   )
 
   useEffect(() => {
@@ -1200,6 +1247,8 @@ function App() {
     if (!pending) return Promise.resolve()
     const { groupId, sharedState, sharedSer } = pending
     const gen = ++groupPersistSaveGenRef.current
+    const inFlightToken = { groupId, sharedSer, gen }
+    groupPersistInFlightRef.current = inFlightToken
     return saveGroupPersistedState(groupId, sharedState)
       .then(() => {
         if (gen !== groupPersistSaveGenRef.current) return
@@ -1208,6 +1257,11 @@ function App() {
       })
       .catch((error) => {
         console.error('[State] Error saving group persisted state:', error)
+      })
+      .finally(() => {
+        if (groupPersistInFlightRef.current === inFlightToken) {
+          groupPersistInFlightRef.current = null
+        }
       })
   }, [])
 
@@ -1375,7 +1429,7 @@ function App() {
           orderedMemberRows = orderGroupMemberRows(memberRows, sessionUserId)
           memberIds = orderedMemberRows.map((r) => r.user_id)
           if (!isCancelled) {
-            setGroupMemberRoster(orderedMemberRows)
+            setGroupMemberRoster(applyManualStatusOverridesToRows(orderedMemberRows))
             setGroupMembersError('')
           }
         } catch (err) {
@@ -1425,7 +1479,14 @@ function App() {
       isCancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only affects labels (labelForParticipant); omit to avoid reloading shared state
-  }, [session?.user?.id, activeGroupId, groupRole, pruneInvalidParticipantReferences, applyPersistedState])
+  }, [
+    session?.user?.id,
+    activeGroupId,
+    groupRole,
+    pruneInvalidParticipantReferences,
+    applyPersistedState,
+    applyManualStatusOverridesToRows
+  ])
 
   // Save shared state (owners/admins) for the active group (trailing debounce; flush on group switch / hide / unmount).
   useEffect(() => {
@@ -1442,7 +1503,6 @@ function App() {
     if (!activeGroupId || !groupRole) return
     if (skipNextPersistRef.current) {
       skipNextPersistRef.current = false
-      cancelActiveGroupPersistDebounce()
       return
     }
 
@@ -1583,6 +1643,11 @@ function App() {
     let isMounted = true
     const unsubscribe = subscribeToGroupLoadoutChanges(supabase, activeGroupId, async () => {
       if (!isMounted) return
+      const inFlightForActiveGroup =
+        groupPersistInFlightRef.current &&
+        groupPersistInFlightRef.current.groupId === activeGroupId
+      // Ignore loadout-state echoes while our own save for this group is in flight.
+      if (inFlightForActiveGroup) return
       try {
         const [latest, memberRows] = await Promise.all([
           fetchGroupPersistedState(activeGroupId),
@@ -1590,10 +1655,15 @@ function App() {
         ])
         if (!isMounted) return
 
+        const inFlightAfterFetch =
+          groupPersistInFlightRef.current &&
+          groupPersistInFlightRef.current.groupId === activeGroupId
+        if (inFlightAfterFetch) return
+
         const orderedRows = orderGroupMemberRows(memberRows, userId)
         const memberIds = orderedRows.map((r) => r.user_id)
         setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
-        setGroupMemberRoster(orderedRows)
+        setGroupMemberRoster(applyManualStatusOverridesToRows(orderedRows))
         setParticipants(memberIds)
         pruneInvalidParticipantReferences(memberIds)
 
@@ -1601,6 +1671,12 @@ function App() {
 
         const serializedLatest = stableSerialize(latest)
         if (serializedLatest === lastGroupPersistedRef.current) return
+
+        const pendingForActiveGroup =
+          groupPersistPendingRef.current &&
+          groupPersistPendingRef.current.groupId === activeGroupId
+        // Don't clobber in-progress local edits that are queued to persist shortly.
+        if (pendingForActiveGroup) return
 
         lastGroupPersistedRef.current = serializedLatest
         skipNextPersistRef.current = true
@@ -1616,7 +1692,13 @@ function App() {
       unsubscribe()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
-  }, [session?.user?.id, activeGroupId, pruneInvalidParticipantReferences, applyPersistedState])
+  }, [
+    session?.user?.id,
+    activeGroupId,
+    pruneInvalidParticipantReferences,
+    applyPersistedState,
+    applyManualStatusOverridesToRows
+  ])
 
   useEffect(() => {
     if (!supabase || !session?.user?.id || !activeGroupId) return
@@ -1631,7 +1713,7 @@ function App() {
         const orderedRows = orderGroupMemberRows(memberRows, userId)
         const memberIds = orderedRows.map((r) => r.user_id)
         setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
-        setGroupMemberRoster(orderedRows)
+        setGroupMemberRoster(applyManualStatusOverridesToRows(orderedRows))
         setParticipants(memberIds)
         pruneInvalidParticipantReferences(memberIds)
         setGroupMembersError('')
@@ -1646,7 +1728,12 @@ function App() {
       unsubscribe()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
-  }, [session?.user?.id, activeGroupId, pruneInvalidParticipantReferences])
+  }, [
+    session?.user?.id,
+    activeGroupId,
+    pruneInvalidParticipantReferences,
+    applyManualStatusOverridesToRows
+  ])
 
   useEffect(() => {
     if (!supabase || !session?.user?.id || !activeGroupId) return
@@ -1662,9 +1749,20 @@ function App() {
             payload?.eventType === 'DELETE'
               ? 'available'
               : normalizeGroupManualStatus(payload?.new?.manual_status)
+          const override = manualStatusOverridesRef.current.get(changedUserId)
+          const overrideActive = !!override && override.expiresAt > Date.now()
+          const keepLocalOverride = overrideActive && override.status !== nextStatus
+          if (overrideActive && override.status === nextStatus) {
+            clearManualStatusOverride(changedUserId)
+          }
           setGroupMemberRoster((prev) =>
             prev.map((row) =>
-              row.user_id === changedUserId ? { ...row, manual_status: nextStatus } : row
+              row.user_id === changedUserId
+                ? {
+                    ...row,
+                    manual_status: keepLocalOverride ? override.status : nextStatus
+                  }
+                : row
             )
           )
         }
@@ -1673,7 +1771,7 @@ function App() {
         const orderedRows = orderGroupMemberRows(memberRows, userId)
         const memberIds = orderedRows.map((r) => r.user_id)
         setGroupMemberLabels(buildGroupMemberLabelMap(orderedRows, userId, profileDisplayName))
-        setGroupMemberRoster(orderedRows)
+        setGroupMemberRoster(applyManualStatusOverridesToRows(orderedRows))
         setParticipants(memberIds)
       } catch (error) {
         console.error('[Realtime] Failed to sync availability update:', error)
@@ -1685,7 +1783,7 @@ function App() {
       unsubscribe()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only for member label map; omit to avoid effect churn
-  }, [session?.user?.id, activeGroupId])
+  }, [session?.user?.id, activeGroupId, applyManualStatusOverridesToRows, clearManualStatusOverride])
 
   useEffect(() => {
     if (!supabase || !session?.user?.id || !activeGroupId) {
@@ -2306,7 +2404,16 @@ function App() {
       if (observer) observer.disconnect()
       window.removeEventListener('resize', updateOrientation)
     }
-  }, [selectedGamemode, activeGroupId, groupRole, isSidebarCollapsed, isSidebarOverlayMode, layoutRefreshNonce])
+  }, [
+    selectedGamemode,
+    activeGroupId,
+    groupRole,
+    isSidebarCollapsed,
+    isSidebarOverlayMode,
+    showGameOptionsPanel,
+    mobilePanelTab,
+    layoutRefreshNonce
+  ])
 
   useEffect(() => {
     if (!import.meta.hot) return
@@ -3841,7 +3948,8 @@ function App() {
   const isTdmFamilyMode =
     normalizedGamemode === 'team_deathmatch' ||
     normalizedGamemode === 'power_shift'
-  const isDynamicLayoutMode = isDynamicLayoutModeConfig(modeConfig)
+  // Always use the dynamic layout engine whenever we have a valid mode config.
+  const isDynamicLayoutMode = !!modeConfig
   const isTeamDeathmatchMode = isTdmFamilyMode && !isDynamicLayoutMode
   const participantsListPoolReplacePreview =
     !isViewOnlyMode &&
@@ -3921,7 +4029,19 @@ function App() {
 
     const rafId = requestAnimationFrame(measure)
     return () => cancelAnimationFrame(rafId)
-  }, [isDynamicLayoutMode, teamsPanelWidth, teamsPanelHeight, viewportWidth, effectiveUnassignedParticipantsCount, participants.length, teamAssignments, isViewOnlyMode, layoutRefreshNonce])
+  }, [
+    isDynamicLayoutMode,
+    teamsPanelWidth,
+    teamsPanelHeight,
+    viewportWidth,
+    effectiveUnassignedParticipantsCount,
+    participants.length,
+    teamAssignments,
+    isViewOnlyMode,
+    showGameOptionsPanel,
+    mobilePanelTab,
+    layoutRefreshNonce
+  ])
 
   const computedDynamicLayout = useMemo(
     () => {
