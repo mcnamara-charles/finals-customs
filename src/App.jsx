@@ -1510,7 +1510,9 @@ function App() {
       lockedMap,
       lockedWeather,
       lockedLoadoutRandomTarget,
-      participants,
+      // Canonicalize participant id ordering for persisted shared state so
+      // per-viewer UI ordering differences cannot cause cross-client ping-pong writes.
+      participants: [...participants].sort((a, b) => String(a).localeCompare(String(b))),
       teamAssignments,
       lockedParticipants,
       balancedTeams,
