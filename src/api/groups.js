@@ -4,14 +4,14 @@ const MEMBER_PREVIEW_LIMIT = 3
 
 /**
  * @param {string} userId
- * @returns {Promise<Array<{ id: string, name: string, join_code: string, role: string, member_count: number, member_preview_user_ids: string[] }>>}
+ * @returns {Promise<Array<{ id: string, name: string, join_code: string, gradient_color_a: string, gradient_color_b: string, role: string, member_count: number, member_preview_user_ids: string[], member_preview_profiles: Array<{ user_id: string, username?: string | null, display_name?: string | null, avatar_url?: string | null, discord_user_id?: string | null, discord_avatar_hash?: string | null }> }>>}
  */
 export async function fetchMyGroups(userId) {
   if (!supabase || !userId) return []
 
   const { data, error } = await supabase
     .from('group_memberships')
-    .select('role, groups (id, name, join_code)')
+    .select('role, groups (id, name, join_code, gradient_color_a, gradient_color_b)')
     .eq('user_id', userId)
 
   if (error) throw error
@@ -24,6 +24,8 @@ export async function fetchMyGroups(userId) {
         id: g.id,
         name: g.name,
         join_code: g.join_code,
+        gradient_color_a: g.gradient_color_a,
+        gradient_color_b: g.gradient_color_b,
         role: row.role
       }
     })
@@ -47,12 +49,40 @@ export async function fetchMyGroups(userId) {
     }
   }
 
+  const allUserIds = [...new Set([].concat(...Array.from(userIdsByGroup.values())))]
+  /** @type {Map<string, { user_id: string, username?: string | null, display_name?: string | null, avatar_url?: string | null, discord_user_id?: string | null, discord_avatar_hash?: string | null }>} */
+  const profileMap = new Map()
+  if (allUserIds.length) {
+    const { data: profileRows, error: profileErr } = await supabase
+      .from('profiles')
+      .select('user_id, username, display_name, avatar_url, discord_user_id, discord_avatar_hash')
+      .in('user_id', allUserIds)
+    if (profileErr) throw profileErr
+    for (const p of profileRows || []) {
+      if (!p?.user_id) continue
+      profileMap.set(p.user_id, {
+        user_id: p.user_id,
+        username: p.username || null,
+        display_name: p.display_name || null,
+        avatar_url: p.avatar_url || null,
+        discord_user_id: p.discord_user_id || null,
+        discord_avatar_hash: p.discord_avatar_hash || null
+      })
+    }
+  }
+
   return rows.map((g) => {
     const uids = (userIdsByGroup.get(g.id) || []).slice().sort()
+    const previewIds = uids.slice(0, MEMBER_PREVIEW_LIMIT)
     return {
       ...g,
       member_count: uids.length,
-      member_preview_user_ids: uids.slice(0, MEMBER_PREVIEW_LIMIT)
+      member_preview_user_ids: previewIds,
+      member_preview_profiles: previewIds.map((uid) => {
+        const profile = profileMap.get(uid)
+        if (profile) return profile
+        return { user_id: uid, username: null, display_name: null, avatar_url: null, discord_user_id: null, discord_avatar_hash: null }
+      })
     }
   })
 }
@@ -262,6 +292,67 @@ export async function transferGroupOwnership(groupId, newOwnerUserId) {
   const { error } = await supabase.rpc('transfer_group_ownership', {
     p_group_id: groupId,
     p_new_owner_user_id: newOwnerUserId
+  })
+  if (error) throw error
+}
+
+/**
+ * @param {string} groupId
+ * @returns {Promise<string>} new join code
+ */
+export async function rotateGroupJoinCode(groupId) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  const { data, error } = await supabase.rpc('rotate_group_join_code', {
+    p_group_id: groupId
+  })
+  if (error) throw error
+  return data
+}
+
+/**
+ * @param {string} groupId
+ */
+export async function deleteGroup(groupId) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  const { error } = await supabase.rpc('delete_group', {
+    p_group_id: groupId
+  })
+  if (error) throw error
+}
+
+/**
+ * @param {string} groupId
+ * @param {string} colorA
+ * @param {string} colorB
+ */
+export async function setGroupGradientColors(groupId, colorA, colorB) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  if (!colorA || !colorB) throw new Error('Missing gradient colors')
+
+  const { error } = await supabase.rpc('set_group_gradient_colors', {
+    group_id: groupId,
+    color_a: colorA,
+    color_b: colorB
+  })
+  if (error) throw error
+}
+
+/**
+ * @param {string} groupId
+ * @param {string} groupName
+ */
+export async function setGroupName(groupId, groupName) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  const name = String(groupName || '').trim()
+  if (!name) throw new Error('Group name is required')
+
+  const { error } = await supabase.rpc('set_group_name', {
+    p_group_id: groupId,
+    p_name: name
   })
   if (error) throw error
 }
