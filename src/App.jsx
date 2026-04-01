@@ -46,8 +46,18 @@ import {
   removeGroupMember,
   leaveGroup,
   transferGroupOwnership,
+  rotateGroupJoinCode,
+  deleteGroup,
+  setGroupName,
+  setGroupGradientColors,
   normalizeGroupManualStatus
 } from './services/groupService'
+import {
+  buildInviteLink,
+  clearStoredPendingInviteCode,
+  readInviteCodeFromSearch,
+  readStoredPendingInviteCode
+} from './services/inviteLinkService'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faArrowLeft,
@@ -78,6 +88,12 @@ const DASHBOARD_SIDEBAR_OVERLAY_BREAKPOINT = 800
 const LOADOUTS_MOBILE_PANEL_BREAKPOINT = 500
 const VIEWPORT_MENU_PAD = 8
 const MENU_TRIGGER_GAP = 4
+const GROUP_SETTINGS_TAB_OVERRIDES = 'overrides'
+const GROUP_SETTINGS_TAB_GROUP = 'group'
+const GROUP_SETTINGS_TAB_TEAM = 'team'
+const GROUP_SETTINGS_TAB_LOADOUTS = 'loadouts'
+const GROUP_SETTINGS_TAB_EVENTS = 'events'
+const ACTIVE_GROUP_STORAGE_KEY = 'finals_customs.active_group_id'
 
 function clampMainMenuToViewport(menuEl, triggerRect) {
   const vw = window.innerWidth
@@ -251,6 +267,29 @@ const DASHBOARD_GROUP_TILE_SKELETON_COUNT = 6
 const GROUP_UUID_PARAM_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+function readStoredActiveGroupId() {
+  if (typeof window === 'undefined') return ''
+  try {
+    return String(window.localStorage.getItem(ACTIVE_GROUP_STORAGE_KEY) || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredActiveGroupId(groupId) {
+  if (typeof window === 'undefined') return
+  const value = String(groupId || '').trim()
+  try {
+    if (!value) {
+      window.localStorage.removeItem(ACTIVE_GROUP_STORAGE_KEY)
+      return
+    }
+    window.localStorage.setItem(ACTIVE_GROUP_STORAGE_KEY, value)
+  } catch {
+    // Ignore storage write failures (private mode, quota, etc).
+  }
+}
+
 function hashString32(str) {
   let h = 0
   for (let i = 0; i < str.length; i += 1) {
@@ -259,7 +298,20 @@ function hashString32(str) {
   return h >>> 0
 }
 
-function groupDashboardBannerStyle(groupId) {
+function normalizeHexColor(value) {
+  const normalized = String(value || '').trim().toUpperCase()
+  return /^#[0-9A-F]{6}$/.test(normalized) ? normalized : ''
+}
+
+function groupDashboardBannerStyle(group) {
+  const groupId = String(group?.id || '')
+  const colorA = normalizeHexColor(group?.gradient_color_a)
+  const colorB = normalizeHexColor(group?.gradient_color_b)
+  if (colorA && colorB) {
+    return {
+      background: `linear-gradient(128deg, ${colorA} 0%, ${colorB} 100%)`
+    }
+  }
   const h = hashString32(groupId)
   const h1 = h % 360
   const h2 = Math.imul(h, 7919) % 360
@@ -323,6 +375,17 @@ function twoLetterAvatarLabel(handle) {
 function normalizeAvatarUrl(rawUrl) {
   const u = String(rawUrl || '').trim()
   if (!u) return ''
+  // Normalize Discord CDN avatar URLs to our canonical form so extension and
+  // cache behavior are consistent across clients.
+  const discordPathMatch = u.match(
+    /https?:\/\/cdn\.discordapp\.com\/avatars\/([^/]+)\/([^/.?]+)(?:\.[^/?#]+)?(?:[?#].*)?$/i
+  )
+  if (discordPathMatch) {
+    const userId = String(discordPathMatch[1] || '').trim()
+    const hash = String(discordPathMatch[2] || '').trim()
+    const canonicalDiscordUrl = buildDiscordAvatarUrl(userId, hash)
+    if (canonicalDiscordUrl) return canonicalDiscordUrl
+  }
   return u
 }
 
@@ -332,7 +395,7 @@ function buildDiscordAvatarUrl(discordUserId, avatarHash) {
   const hash = String(avatarHash || '').trim()
   if (!userId || !hash) return ''
   const ext = hash.startsWith('a_') ? 'gif' : 'png'
-  return `https://cdn.discordapp.com/avatars/${userId}/${hash}.${ext}?size=256`
+  return `https://cdn.discordapp.com/avatars/${userId}/${hash}.${ext}?size=256&v=${encodeURIComponent(hash)}`
 }
 
 /** @param {{ avatar_url?: string | null, discord_user_id?: string | null, discord_avatar_hash?: string | null }} row @param {string} label */
@@ -400,14 +463,22 @@ function App() {
   const [selectedWeather, setSelectedWeather] = useState(null)
   const [selectedLoadoutRandomTarget, setSelectedLoadoutRandomTarget] = useState('')
   const [activeGroupId, setActiveGroupId] = useState(null)
+  const activeGroupIdRef = useRef(null)
+  activeGroupIdRef.current = activeGroupId
   const [groupRole, setGroupRole] = useState(null)
   const [myGroups, setMyGroups] = useState([])
   const [groupsLoadError, setGroupsLoadError] = useState('')
   const [joinCodeInput, setJoinCodeInput] = useState('')
   const [joinBusy, setJoinBusy] = useState(false)
+  const [inviteActionBusy, setInviteActionBusy] = useState(false)
+  const [groupInviteStatusMessage, setGroupInviteStatusMessage] = useState('')
   const [newGroupName, setNewGroupName] = useState('')
   const [createGroupBusy, setCreateGroupBusy] = useState(false)
   const [createGroupModalOpen, setCreateGroupModalOpen] = useState(false)
+  const [dashboardGroupMenuId, setDashboardGroupMenuId] = useState(null)
+  const [dashboardGroupMenuPosition, setDashboardGroupMenuPosition] = useState(null)
+  const [deleteGroupTarget, setDeleteGroupTarget] = useState(null)
+  const [deleteGroupBusy, setDeleteGroupBusy] = useState(false)
   const [groupsInitialised, setGroupsInitialised] = useState(false)
   const [lockedGamemode, setLockedGamemode] = useState(false)
   const [lockedMap, setLockedMap] = useState(false)
@@ -433,8 +504,19 @@ function App() {
   const [teamAssignments, setTeamAssignments] = useState({})
   const [lockedParticipants, setLockedParticipants] = useState({}) // { participantName: teamIndex }
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
+  const [isGroupSettingsModalOpen, setIsGroupSettingsModalOpen] = useState(false)
+  const [groupSettingsActiveTab, setGroupSettingsActiveTab] = useState(GROUP_SETTINGS_TAB_OVERRIDES)
+  const [rotateInviteBusy, setRotateInviteBusy] = useState(false)
+  const [groupGradientColorA, setGroupGradientColorA] = useState('#475569')
+  const [groupGradientColorB, setGroupGradientColorB] = useState('#334155')
+  const [groupGradientBusy, setGroupGradientBusy] = useState(false)
+  const [groupGradientError, setGroupGradientError] = useState('')
+  const [groupGradientStatus, setGroupGradientStatus] = useState('')
+  const [groupNameDraft, setGroupNameDraft] = useState('')
+  const [groupNameBusy, setGroupNameBusy] = useState(false)
+  const [groupNameError, setGroupNameError] = useState('')
+  const [groupNameStatus, setGroupNameStatus] = useState('')
   const [isUserSettingsModalOpen, setIsUserSettingsModalOpen] = useState(false)
-  const [isTeamSettingsModalOpen, setIsTeamSettingsModalOpen] = useState(false)
   const [balancedTeams, setBalancedTeams] = useState(true)
   const [fillFirst, setFillFirst] = useState(false)
   const [keepSeparatePairs, setKeepSeparatePairs] = useState([])
@@ -486,6 +568,10 @@ function App() {
   const isInitialLoad = useRef(true)
   const skipNextPersistRef = useRef(false)
   const lastGroupPersistedRef = useRef('')
+  const groupPersistTimerRef = useRef(null)
+  /** Latest debounced snapshot `{ groupId, sharedState, sharedSer }` or null. */
+  const groupPersistPendingRef = useRef(null)
+  const groupPersistSaveGenRef = useRef(0)
   /** Last `activeGroupId` whose persisted-state load finished; reset when the group changes. */
   const lastLoadedGroupIdRef = useRef(null)
   const teamsPanelRef = useRef(null)
@@ -589,6 +675,79 @@ function App() {
     const local = email.includes('@') ? email.split('@')[0] : email
     return local.trim() || 'Profile'
   }, [selfProfileHandle, session?.user?.email, session?.user?.user_metadata?.username])
+  const activeGroupName = useMemo(() => {
+    if (!activeGroupId) return ''
+    const matched = myGroups.find((g) => g.id === activeGroupId)
+    const name = String(matched?.name || '').trim()
+    return name || 'Current Group'
+  }, [activeGroupId, myGroups])
+  const activeGroupRow = useMemo(
+    () => myGroups.find((g) => g.id === activeGroupId) || null,
+    [myGroups, activeGroupId]
+  )
+  const activeGroupJoinCode = useMemo(
+    () => String(activeGroupRow?.join_code || '').trim().toUpperCase(),
+    [activeGroupRow?.join_code]
+  )
+  const activeGroupInviteLink = useMemo(
+    () => buildInviteLink(activeGroupJoinCode),
+    [activeGroupJoinCode]
+  )
+  const activeGroupGradientColorA = useMemo(
+    () => normalizeHexColor(activeGroupRow?.gradient_color_a),
+    [activeGroupRow?.gradient_color_a]
+  )
+  const activeGroupGradientColorB = useMemo(
+    () => normalizeHexColor(activeGroupRow?.gradient_color_b),
+    [activeGroupRow?.gradient_color_b]
+  )
+  const canEditGroupGradient = groupRole === 'owner' || groupRole === 'admin'
+  const canEditGroupName = groupRole === 'owner' || groupRole === 'admin'
+  const hasGroupGradientChanges = useMemo(() => {
+    const nextColorA = normalizeHexColor(groupGradientColorA)
+    const nextColorB = normalizeHexColor(groupGradientColorB)
+    return (
+      !!nextColorA &&
+      !!nextColorB &&
+      (nextColorA !== activeGroupGradientColorA || nextColorB !== activeGroupGradientColorB)
+    )
+  }, [
+    groupGradientColorA,
+    groupGradientColorB,
+    activeGroupGradientColorA,
+    activeGroupGradientColorB
+  ])
+  const settingsHeaderGroupTitle = activeGroupName || 'Dashboard'
+  const groupGradientPreviewStyle = useMemo(() => {
+    const previewGroup = {
+      id: activeGroupRow?.id || activeGroupId || 'preview-group',
+      gradient_color_a: normalizeHexColor(groupGradientColorA) || activeGroupGradientColorA,
+      gradient_color_b: normalizeHexColor(groupGradientColorB) || activeGroupGradientColorB
+    }
+    return groupDashboardBannerStyle(previewGroup)
+  }, [
+    activeGroupRow?.id,
+    activeGroupId,
+    groupGradientColorA,
+    groupGradientColorB,
+    activeGroupGradientColorA,
+    activeGroupGradientColorB
+  ])
+  const groupGradientPreviewProfiles = useMemo(() => {
+    const row = activeGroupRow
+    if (!row) return []
+    const explicitProfiles = Array.isArray(row.member_preview_profiles)
+      ? row.member_preview_profiles
+      : []
+    if (explicitProfiles.length) return explicitProfiles
+    const fallbackIds = Array.isArray(row.member_preview_user_ids) ? row.member_preview_user_ids : []
+    return fallbackIds.map((uid) => ({ user_id: uid }))
+  }, [activeGroupRow])
+  const groupGradientPreviewOverflow = useMemo(() => {
+    const count = Number(activeGroupRow?.member_count || 0)
+    const previewCount = groupGradientPreviewProfiles.length
+    return count > previewCount ? count - previewCount : 0
+  }, [activeGroupRow?.member_count, groupGradientPreviewProfiles])
   const profileAvatarUrl = useMemo(() => {
     const metadataDiscordUserId = session?.user?.user_metadata?.provider_id
     const metadataDiscordAvatarHash = session?.user?.user_metadata?.avatar
@@ -1037,6 +1196,21 @@ function App() {
     [activeGroupId]
   )
 
+  const flushGroupPersistedPending = useCallback((pending) => {
+    if (!pending) return Promise.resolve()
+    const { groupId, sharedState, sharedSer } = pending
+    const gen = ++groupPersistSaveGenRef.current
+    return saveGroupPersistedState(groupId, sharedState)
+      .then(() => {
+        if (gen !== groupPersistSaveGenRef.current) return
+        if (groupId !== activeGroupIdRef.current) return
+        lastGroupPersistedRef.current = sharedSer
+      })
+      .catch((error) => {
+        console.error('[State] Error saving group persisted state:', error)
+      })
+  }, [])
+
   useEffect(() => {
     if (lockedWeather && !lockedMap) {
       setLockedMap(true)
@@ -1066,6 +1240,13 @@ function App() {
     }
   }, [selectedMapId, selectedWeather, lockedWeather])
 
+  const clearInviteInUrl = useCallback(() => {
+    const url = new URL(window.location.href)
+    if (!url.searchParams.has('invite')) return
+    url.searchParams.delete('invite')
+    window.history.replaceState({}, '', `${url.pathname}${url.search}`)
+  }, [])
+
   useEffect(() => {
     if (!session?.user?.id || !supabase) {
       setGroupsInitialised(false)
@@ -1080,21 +1261,48 @@ function App() {
     ;(async () => {
       try {
         const params = new URLSearchParams(locationSearch)
-        const g = params.get('group')
+        const g = String(params.get('group') || '').trim()
+        const deepLinkGroupId = g && GROUP_UUID_PARAM_RE.test(g) ? g : ''
+        const inviteCodeFromUrl = readInviteCodeFromSearch(locationSearch)
+        const inviteCodeFromStorage = readStoredPendingInviteCode()
+        const pendingInviteCode = inviteCodeFromUrl || inviteCodeFromStorage
+        let inviteJoinedGroupId = ''
+        if (pendingInviteCode) {
+          try {
+            inviteJoinedGroupId = await joinGroupByCode(pendingInviteCode)
+            clearStoredPendingInviteCode()
+          } catch (err) {
+            clearStoredPendingInviteCode()
+            if (inviteCodeFromUrl || inviteCodeFromStorage) {
+              setGroupsLoadError(err.message || 'Could not join that invite link.')
+            }
+          } finally {
+            if (inviteCodeFromUrl) {
+              clearInviteInUrl()
+            }
+          }
+        }
+        const storedGroupIdRaw = readStoredActiveGroupId()
+        const storedGroupId = GROUP_UUID_PARAM_RE.test(storedGroupIdRaw) ? storedGroupIdRaw : ''
+        const candidateGroupId = deepLinkGroupId || inviteJoinedGroupId || storedGroupId
 
-        if (g && GROUP_UUID_PARAM_RE.test(g)) {
-          const role = await fetchRoleInGroup(session.user.id, g)
+        if (candidateGroupId) {
+          const role = await fetchRoleInGroup(session.user.id, candidateGroupId)
           if (cancelled) return
           if (role) {
-            setActiveGroupId(g)
+            setActiveGroupId(candidateGroupId)
             setGroupRole(role)
+            writeStoredActiveGroupId(candidateGroupId)
           } else {
             const url = new URL(window.location.href)
             url.searchParams.delete('group')
             window.history.replaceState({}, '', `${url.pathname}${url.search}`)
-            setGroupsLoadError('That group link is invalid or you are not a member.')
+            if (deepLinkGroupId) {
+              setGroupsLoadError('That group link is invalid or you are not a member.')
+            }
             setActiveGroupId(null)
             setGroupRole(null)
+            writeStoredActiveGroupId('')
           }
         } else {
           if (g) {
@@ -1121,7 +1329,11 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [session?.user?.id, locationSearch])
+  }, [session?.user?.id, locationSearch, clearInviteInUrl])
+
+  useEffect(() => {
+    writeStoredActiveGroupId(activeGroupId || '')
+  }, [activeGroupId])
 
   useEffect(() => {
     isInitialLoad.current = true
@@ -1215,12 +1427,22 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- profileDisplayName only affects labels (labelForParticipant); omit to avoid reloading shared state
   }, [session?.user?.id, activeGroupId, groupRole, pruneInvalidParticipantReferences, applyPersistedState])
 
-  // Save shared state (owners/admins) for the active group.
+  // Save shared state (owners/admins) for the active group (trailing debounce; flush on group switch / hide / unmount).
   useEffect(() => {
+    const GROUP_PERSIST_DEBOUNCE_MS = 1000
+
+    const cancelActiveGroupPersistDebounce = () => {
+      if (groupPersistPendingRef.current?.groupId !== activeGroupId) return
+      clearTimeout(groupPersistTimerRef.current)
+      groupPersistTimerRef.current = null
+      groupPersistPendingRef.current = null
+    }
+
     if (isInitialLoad.current) return
     if (!activeGroupId || !groupRole) return
     if (skipNextPersistRef.current) {
       skipNextPersistRef.current = false
+      cancelActiveGroupPersistDebounce()
       return
     }
 
@@ -1256,17 +1478,42 @@ function App() {
     const canWriteShared = groupRole === 'owner' || groupRole === 'admin'
     const sharedSer = stableSerialize(sharedState)
 
-    if (canWriteShared && sharedSer !== lastGroupPersistedRef.current) {
-      saveGroupPersistedState(activeGroupId, sharedState)
-        .then(() => {
-          lastGroupPersistedRef.current = sharedSer
-        })
-        .catch((error) => {
-          console.error('[State] Error saving group persisted state:', error)
-        })
+    if (!canWriteShared) {
+      cancelActiveGroupPersistDebounce()
+      return
     }
 
+    if (sharedSer === lastGroupPersistedRef.current) {
+      cancelActiveGroupPersistDebounce()
+      return
+    }
+
+    groupPersistPendingRef.current = {
+      groupId: activeGroupId,
+      sharedState,
+      sharedSer
+    }
+    clearTimeout(groupPersistTimerRef.current)
+    groupPersistTimerRef.current = setTimeout(() => {
+      groupPersistTimerRef.current = null
+      const pending = groupPersistPendingRef.current
+      if (!pending) return
+      groupPersistPendingRef.current = null
+      void flushGroupPersistedPending(pending)
+    }, GROUP_PERSIST_DEBOUNCE_MS)
+
+    return () => {
+      clearTimeout(groupPersistTimerRef.current)
+      groupPersistTimerRef.current = null
+      const pending = groupPersistPendingRef.current
+      if (!pending) return
+      if (pending.groupId !== activeGroupIdRef.current) {
+        groupPersistPendingRef.current = null
+        void flushGroupPersistedPending(pending)
+      }
+    }
   }, [
+    flushGroupPersistedPending,
     groupRole,
     activeGroupId,
     selectedGamemode,
@@ -1295,6 +1542,39 @@ function App() {
     gadgetEnabled,
     playerOverrides
   ])
+
+  useEffect(
+    () => () => {
+      clearTimeout(groupPersistTimerRef.current)
+      groupPersistTimerRef.current = null
+      const p = groupPersistPendingRef.current
+      if (!p) return
+      groupPersistPendingRef.current = null
+      void flushGroupPersistedPending(p)
+    },
+    [flushGroupPersistedPending]
+  )
+
+  useEffect(() => {
+    const flushPendingGroupPersistNow = () => {
+      clearTimeout(groupPersistTimerRef.current)
+      groupPersistTimerRef.current = null
+      const p = groupPersistPendingRef.current
+      if (!p) return
+      groupPersistPendingRef.current = null
+      void flushGroupPersistedPending(p)
+    }
+    const syncPendingOnHide = () => {
+      if (document.visibilityState !== 'hidden') return
+      flushPendingGroupPersistNow()
+    }
+    document.addEventListener('visibilitychange', syncPendingOnHide)
+    window.addEventListener('pagehide', flushPendingGroupPersistNow)
+    return () => {
+      document.removeEventListener('visibilitychange', syncPendingOnHide)
+      window.removeEventListener('pagehide', flushPendingGroupPersistNow)
+    }
+  }, [flushGroupPersistedPending])
 
   useEffect(() => {
     if (!supabase || !session?.user?.id || !activeGroupId) return
@@ -1497,7 +1777,6 @@ function App() {
     if (!isViewOnlyMode) return
     setIsSettingsModalOpen(false)
     setIsUserSettingsModalOpen(false)
-    setIsTeamSettingsModalOpen(false)
     setLoadoutSelector(null)
   }, [isViewOnlyMode])
 
@@ -1508,7 +1787,32 @@ function App() {
     window.history.replaceState({}, '', `${url.pathname}${url.search}`)
   }
 
+  const copyText = useCallback(async (text) => {
+    if (!text) throw new Error('Nothing to copy.')
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    if (!ok) throw new Error('Could not copy.')
+  }, [])
+
+  const closeDashboardGroupMenu = useCallback(() => {
+    setDashboardGroupMenuId(null)
+    setDashboardGroupMenuPosition(null)
+  }, [])
+
   const openGroup = (g) => {
+    closeDashboardGroupMenu()
+    setDeleteGroupTarget(null)
     setActiveGroupId(g.id)
     setGroupRole(g.role)
     syncGroupInUrl(g.id)
@@ -1516,6 +1820,7 @@ function App() {
   }
 
   const backToGroupsDashboard = () => {
+    closeDashboardGroupMenu()
     setActiveGroupId(null)
     setGroupRole(null)
     setIsProfileMenuOpen(false)
@@ -1542,6 +1847,185 @@ function App() {
     }
   }
 
+  const handleCopyJoinCode = useCallback(async (joinCode) => {
+    try {
+      await copyText(String(joinCode || '').trim().toUpperCase())
+      setGroupsLoadError('')
+    } catch (err) {
+      setGroupsLoadError(err.message || 'Could not copy join code.')
+    }
+  }, [copyText])
+
+  const handleCopyInviteLink = useCallback(async (joinCode) => {
+    try {
+      await copyText(buildInviteLink(joinCode))
+      setGroupsLoadError('')
+    } catch (err) {
+      setGroupsLoadError(err.message || 'Could not copy invite link.')
+    }
+  }, [copyText])
+
+  const refreshGroupsList = useCallback(async () => {
+    if (!session?.user?.id) return []
+    const list = await fetchMyGroups(session.user.id)
+    setMyGroups(list)
+    return list
+  }, [session?.user?.id])
+
+  useEffect(() => {
+    setGroupNameDraft(activeGroupName || '')
+    setGroupNameError('')
+    setGroupNameStatus('')
+  }, [activeGroupId, activeGroupName])
+
+  useEffect(() => {
+    setGroupGradientColorA(activeGroupGradientColorA || '#475569')
+    setGroupGradientColorB(activeGroupGradientColorB || '#334155')
+    setGroupGradientError('')
+    setGroupGradientStatus('')
+  }, [activeGroupId, activeGroupGradientColorA, activeGroupGradientColorB])
+
+  const handleDashboardLeaveGroup = useCallback(
+    async (group) => {
+      if (!group?.id || !session?.user?.id || inviteActionBusy) return
+      if (group.role === 'owner') return
+      setInviteActionBusy(true)
+      setGroupsLoadError('')
+      closeDashboardGroupMenu()
+      try {
+        await leaveGroup(group.id)
+        await refreshGroupsList()
+      } catch (err) {
+        console.error('[Group] Failed to leave group from dashboard:', err)
+        setGroupsLoadError(err.message || 'Could not leave group.')
+      } finally {
+        setInviteActionBusy(false)
+      }
+    },
+    [session?.user?.id, inviteActionBusy, refreshGroupsList, closeDashboardGroupMenu]
+  )
+
+  const handleDashboardDeleteGroup = useCallback(async () => {
+    if (!deleteGroupTarget?.id || !session?.user?.id || deleteGroupBusy) return
+    setDeleteGroupBusy(true)
+    setGroupsLoadError('')
+    try {
+      await deleteGroup(deleteGroupTarget.id)
+      await refreshGroupsList()
+      setDeleteGroupTarget(null)
+    } catch (err) {
+      console.error('[Group] Failed to delete group from dashboard:', err)
+      setGroupsLoadError(err.message || 'Could not delete group.')
+    } finally {
+      setDeleteGroupBusy(false)
+    }
+  }, [deleteGroupTarget, session?.user?.id, deleteGroupBusy, refreshGroupsList])
+
+  const handleRotateInviteCode = useCallback(async () => {
+    if (!activeGroupId || rotateInviteBusy) return
+    setRotateInviteBusy(true)
+    setGroupsLoadError('')
+    setGroupInviteStatusMessage('')
+    try {
+      const nextCode = await rotateGroupJoinCode(activeGroupId)
+      const normalizedNextCode = String(nextCode || '').trim().toUpperCase()
+      setMyGroups((prev) =>
+        prev.map((g) => (g.id === activeGroupId ? { ...g, join_code: normalizedNextCode } : g))
+      )
+      await refreshGroupsList()
+      if (normalizedNextCode && normalizedNextCode !== activeGroupJoinCode) {
+        setGroupInviteStatusMessage('Invite code rotated.')
+      } else {
+        setGroupInviteStatusMessage('Invite code refreshed.')
+      }
+    } catch (err) {
+      console.error('[Group] Failed to rotate invite code:', err)
+      setGroupsLoadError(err.message || 'Could not rotate invite code.')
+      setGroupInviteStatusMessage('')
+    } finally {
+      setRotateInviteBusy(false)
+    }
+  }, [activeGroupId, rotateInviteBusy, refreshGroupsList, activeGroupJoinCode])
+
+  const handleSaveGroupGradient = useCallback(async () => {
+    if (!activeGroupId || groupGradientBusy || !canEditGroupGradient || !hasGroupGradientChanges) return
+    const nextColorA = normalizeHexColor(groupGradientColorA)
+    const nextColorB = normalizeHexColor(groupGradientColorB)
+    if (!nextColorA || !nextColorB) {
+      setGroupGradientError('Enter valid hex colors.')
+      setGroupGradientStatus('')
+      return
+    }
+
+    setGroupGradientBusy(true)
+    setGroupGradientError('')
+    setGroupGradientStatus('')
+    try {
+      await setGroupGradientColors(activeGroupId, nextColorA, nextColorB)
+      setMyGroups((prev) =>
+        prev.map((g) =>
+          g.id === activeGroupId
+            ? { ...g, gradient_color_a: nextColorA, gradient_color_b: nextColorB }
+            : g
+        )
+      )
+      await refreshGroupsList()
+      setGroupGradientStatus('Banner gradient updated.')
+    } catch (err) {
+      console.error('[Group] Failed to save gradient colors:', err)
+      setGroupGradientError(err.message || 'Could not save gradient colors.')
+    } finally {
+      setGroupGradientBusy(false)
+    }
+  }, [
+    activeGroupId,
+    groupGradientBusy,
+    canEditGroupGradient,
+    hasGroupGradientChanges,
+    groupGradientColorA,
+    groupGradientColorB,
+    refreshGroupsList
+  ])
+
+  const handleSaveGroupName = useCallback(async () => {
+    const nextName = String(groupNameDraft || '').trim()
+    if (!activeGroupId || groupNameBusy || !canEditGroupName) return
+    if (!nextName) {
+      setGroupNameError('Group name is required.')
+      setGroupNameStatus('')
+      return
+    }
+    if (nextName === String(activeGroupName || '').trim()) {
+      setGroupNameStatus('No name changes to save.')
+      setGroupNameError('')
+      return
+    }
+
+    setGroupNameBusy(true)
+    setGroupNameError('')
+    setGroupNameStatus('')
+    try {
+      await setGroupName(activeGroupId, nextName)
+      setMyGroups((prev) =>
+        prev.map((g) => (g.id === activeGroupId ? { ...g, name: nextName } : g))
+      )
+      await refreshGroupsList()
+      setGroupNameStatus('Group name updated.')
+    } catch (err) {
+      console.error('[Group] Failed to rename group:', err)
+      setGroupNameError(err.message || 'Could not update group name.')
+    } finally {
+      setGroupNameBusy(false)
+    }
+  }, [
+    activeGroupId,
+    groupNameBusy,
+    canEditGroupName,
+    groupNameDraft,
+    activeGroupName,
+    refreshGroupsList
+  ])
+
   const handleCreateGroup = async () => {
     const name = newGroupName.trim()
     if (!name || !session?.user || !supabase) return
@@ -1567,9 +2051,12 @@ function App() {
     try {
       setIsProfileMenuOpen(false)
       setIsUserSettingsModalOpen(false)
+      writeStoredActiveGroupId('')
+      clearStoredPendingInviteCode()
       await authSignOut()
       const url = new URL(window.location.href)
       url.searchParams.delete('group')
+      url.searchParams.delete('invite')
       window.history.replaceState({}, '', `${url.pathname}${url.search}`)
       navigate('/login', { replace: true })
     } catch (err) {
@@ -1679,10 +2166,38 @@ function App() {
   }, [isProfileMenuOpen])
 
   useEffect(() => {
+    if (dashboardGroupMenuId == null) return
+
+    const handlePointerDown = (event) => {
+      const target = event.target
+      if (
+        typeof target?.closest === 'function' &&
+        target.closest(`[data-dashboard-group-menu-wrap="${dashboardGroupMenuId}"]`)
+      ) {
+        return
+      }
+      closeDashboardGroupMenu()
+    }
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        closeDashboardGroupMenu()
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [dashboardGroupMenuId, closeDashboardGroupMenu])
+
+  useEffect(() => {
     const isAnyModalOpen =
       isSettingsModalOpen ||
+      isGroupSettingsModalOpen ||
       isUserSettingsModalOpen ||
-      isTeamSettingsModalOpen ||
       createGroupModalOpen ||
       !!loadoutSelector
 
@@ -1694,7 +2209,13 @@ function App() {
     return () => {
       document.body.style.overflow = previousOverflow
     }
-  }, [isSettingsModalOpen, isUserSettingsModalOpen, isTeamSettingsModalOpen, createGroupModalOpen, loadoutSelector])
+  }, [
+    isSettingsModalOpen,
+    isGroupSettingsModalOpen,
+    isUserSettingsModalOpen,
+    createGroupModalOpen,
+    loadoutSelector
+  ])
 
   useEffect(() => {
     setPlayerOverrides(prev => {
@@ -3361,7 +3882,8 @@ function App() {
       const style = window.getComputedStyle(el)
       const marginTop = Number.parseFloat(style.marginTop || '0') || 0
       const marginBottom = Number.parseFloat(style.marginBottom || '0') || 0
-      return el.getBoundingClientRect().height + marginTop + marginBottom
+      const total = el.getBoundingClientRect().height + marginTop + marginBottom
+      return Number.isFinite(total) && total >= 0 ? total : null
     }
 
     const measure = () => {
@@ -3371,10 +3893,20 @@ function App() {
       const playerNameRowEl = root.querySelector('.player-name-row')
       const assignOptionsEl = root.querySelector('.assign-options')
 
-      setDynamicLayoutRuntimeMetrics({
+      const nextMetrics = {
         teamHeaderReserve: getOuterHeight(teamHeaderEl),
         playerNameRowHeight: getOuterHeight(playerNameRowEl),
         assignOptionsReserve: getOuterHeight(assignOptionsEl) || 0
+      }
+      setDynamicLayoutRuntimeMetrics((prev) => {
+        if (
+          prev.teamHeaderReserve === nextMetrics.teamHeaderReserve &&
+          prev.playerNameRowHeight === nextMetrics.playerNameRowHeight &&
+          prev.assignOptionsReserve === nextMetrics.assignOptionsReserve
+        ) {
+          return prev
+        }
+        return nextMetrics
       })
     }
 
@@ -3386,20 +3918,24 @@ function App() {
     () => {
       // Force recompute after Vite HMR updates in dev.
       void layoutRefreshNonce
-      return isDynamicLayoutMode
-        ? computeDynamicLayout({
-            panelWidth: teamsPanelWidth,
-            viewportWidth,
-            panelHeight: teamsPanelHeight,
-            teams: modeConfig?.teams,
-            playersPerTeam: modeConfig?.players_per_team,
-            hasAssignOptions: effectiveUnassignedParticipantsCount > 0,
-            assignOptionsCount: effectiveUnassignedParticipantsCount,
-            teamHeaderReserve: dynamicLayoutRuntimeMetrics.teamHeaderReserve,
-            playerNameRowHeight: dynamicLayoutRuntimeMetrics.playerNameRowHeight,
-            assignOptionsReserve: dynamicLayoutRuntimeMetrics.assignOptionsReserve
-          })
-        : null
+      if (!isDynamicLayoutMode) return null
+      try {
+        return computeDynamicLayout({
+          panelWidth: teamsPanelWidth,
+          viewportWidth,
+          panelHeight: teamsPanelHeight,
+          teams: modeConfig?.teams,
+          playersPerTeam: modeConfig?.players_per_team,
+          hasAssignOptions: effectiveUnassignedParticipantsCount > 0,
+          assignOptionsCount: effectiveUnassignedParticipantsCount,
+          teamHeaderReserve: dynamicLayoutRuntimeMetrics.teamHeaderReserve,
+          playerNameRowHeight: dynamicLayoutRuntimeMetrics.playerNameRowHeight,
+          assignOptionsReserve: dynamicLayoutRuntimeMetrics.assignOptionsReserve
+        })
+      } catch (error) {
+        console.error('[Layout] Failed to compute dynamic layout:', error)
+        return null
+      }
     },
     [
       isDynamicLayoutMode,
@@ -3785,35 +4321,156 @@ function App() {
                 </button>
                 {myGroups.filter((g) => g.name !== 'Default').map((g) => {
                   const memberCount = g.member_count ?? 0
+                  const previewProfiles = Array.isArray(g.member_preview_profiles)
+                    ? g.member_preview_profiles
+                    : []
+                  const previewCount =
+                    previewProfiles.length || (Array.isArray(g.member_preview_user_ids) ? g.member_preview_user_ids.length : 0)
                   const overflow =
-                    memberCount > DASHBOARD_MEMBER_CHIP_PREVIEW
-                      ? memberCount - DASHBOARD_MEMBER_CHIP_PREVIEW
+                    memberCount > previewCount
+                      ? memberCount - previewCount
                       : 0
+                  const menuOpen = dashboardGroupMenuId === g.id
                   return (
-                    <button
+                    <div
                       key={g.id}
-                      type="button"
                       className="groups-dashboard-group-tile"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => openGroup(g)}
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) return
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          openGroup(g)
+                        }
+                      }}
                     >
                       <div
                         className="groups-dashboard-group-tile-banner"
-                        style={groupDashboardBannerStyle(g.id)}
-                        aria-hidden={true}
-                      />
-                      <div className="groups-dashboard-group-tile-body">
-                        {(g.member_preview_user_ids?.length > 0 || overflow > 0) && (
-                          <div className="groups-dashboard-member-chips" aria-hidden={true}>
-                            {(g.member_preview_user_ids || []).map((uid, idx) => (
-                              <span
-                                key={uid}
-                                className="groups-dashboard-member-chip"
-                                style={{
-                                  background: memberChipColor(uid),
-                                  zIndex: DASHBOARD_MEMBER_CHIP_PREVIEW - idx
+                        style={groupDashboardBannerStyle(g)}
+                      >
+                        <div
+                          className="groups-dashboard-group-menu-wrap"
+                          data-dashboard-group-menu-wrap={g.id}
+                        >
+                          <button
+                            type="button"
+                            className="groups-dashboard-group-menu-trigger"
+                            aria-expanded={menuOpen}
+                            aria-label={`Open actions for ${g.name}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              if (menuOpen) {
+                                closeDashboardGroupMenu()
+                                return
+                              }
+                              setDashboardGroupMenuId(g.id)
+                              setDashboardGroupMenuPosition({
+                                top: rect.bottom + 4,
+                                left: rect.right
+                              })
+                            }}
+                          >
+                            <ParticipantMenuDotsIcon />
+                          </button>
+                          {menuOpen ? (
+                            <div
+                              className="participant-actions-menu groups-dashboard-group-menu"
+                              style={{
+                                position: 'fixed',
+                                top: dashboardGroupMenuPosition?.top,
+                                left: dashboardGroupMenuPosition?.left
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className="participant-actions-menu__item"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  closeDashboardGroupMenu()
+                                  handleCopyJoinCode(g.join_code)
                                 }}
-                              />
-                            ))}
+                              >
+                                Copy join code
+                              </button>
+                              <button
+                                type="button"
+                                className="participant-actions-menu__item"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  closeDashboardGroupMenu()
+                                  handleCopyInviteLink(g.join_code)
+                                }}
+                              >
+                                Copy invite link
+                              </button>
+                              {g.role !== 'owner' ? (
+                                <button
+                                  type="button"
+                                  className="participant-actions-menu__item participant-actions-menu__item--danger"
+                                  disabled={inviteActionBusy}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleDashboardLeaveGroup(g)
+                                  }}
+                                >
+                                  Leave group
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="participant-actions-menu__item participant-actions-menu__item--danger"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    closeDashboardGroupMenu()
+                                    setDeleteGroupTarget(g)
+                                  }}
+                                >
+                                  Delete group
+                                </button>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="groups-dashboard-group-tile-body">
+                        {(previewCount > 0 || overflow > 0) && (
+                          <div className="groups-dashboard-member-chips" aria-hidden={true}>
+                            {(previewProfiles.length
+                              ? previewProfiles
+                              : (g.member_preview_user_ids || []).map((uid) => ({ user_id: uid }))
+                            ).map((profile, idx) => {
+                              const uid = profile?.user_id || `member-${idx}`
+                              const label = (profile?.username || profile?.display_name || 'Member').trim()
+                              const avatarSrc = participantAvatarSrc(profile || {}, label)
+                              return (
+                                <span
+                                  key={uid}
+                                  className="groups-dashboard-member-chip"
+                                  style={{
+                                    background: memberChipColor(uid),
+                                    zIndex: DASHBOARD_MEMBER_CHIP_PREVIEW - idx
+                                  }}
+                                >
+                                  <img
+                                    src={avatarSrc}
+                                    alt=""
+                                    className="groups-dashboard-member-chip-img"
+                                    loading="lazy"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none'
+                                      const initialsNode = e.currentTarget.nextElementSibling
+                                      if (initialsNode) initialsNode.style.display = 'inline-flex'
+                                    }}
+                                  />
+                                  <span className="groups-dashboard-member-chip-fallback">
+                                    {twoLetterAvatarLabel(label)}
+                                  </span>
+                                </span>
+                              )
+                            })}
                             {overflow > 0 && (
                               <span className="groups-dashboard-member-overflow">+{overflow}</span>
                             )}
@@ -3821,15 +4478,59 @@ function App() {
                         )}
                         <span className="groups-dashboard-group-tile-name">{g.name}</span>
                         <span className="groups-dashboard-group-tile-meta">
-                          {g.join_code} · {g.role}
+                          {String(g.join_code || '').toUpperCase()} · {String(g.role || '').replace(/^./, (c) => c.toUpperCase())}
                         </span>
                       </div>
-                    </button>
+                    </div>
                   )
                 })}
               </>
             )}
           </div>
+          {deleteGroupTarget ? (
+            <div
+              className="modal-overlay"
+              role="presentation"
+              onClick={() => {
+                if (!deleteGroupBusy) setDeleteGroupTarget(null)
+              }}
+            >
+              <div
+                className="modal-content groups-dashboard-create-modal groups-dashboard-delete-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="delete-group-modal-title"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="modal-body">
+                  <h2 id="delete-group-modal-title" className="groups-dashboard-create-modal-title">
+                    Delete group
+                  </h2>
+                  <p className="settings-description">
+                    This deletes <strong>{deleteGroupTarget.name}</strong> and cannot be undone.
+                  </p>
+                  <div className="groups-dashboard-create-modal-actions">
+                    <button
+                      type="button"
+                      className="groups-dashboard-create-cancel-btn"
+                      onClick={() => setDeleteGroupTarget(null)}
+                      disabled={deleteGroupBusy}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className="settings-override-delete-btn"
+                      onClick={handleDashboardDeleteGroup}
+                      disabled={deleteGroupBusy}
+                    >
+                      {deleteGroupBusy ? 'Deleting…' : 'Delete group'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </main>
       </div>
     )
@@ -3838,6 +4539,668 @@ function App() {
   if (!groupRole) {
     return <FullPageLoading label="Loading group" />
   }
+
+  const groupSettingsTabs = [
+    { key: GROUP_SETTINGS_TAB_OVERRIDES, label: 'Overrides' },
+    { key: GROUP_SETTINGS_TAB_GROUP, label: 'Group' },
+    { key: GROUP_SETTINGS_TAB_TEAM, label: 'Team' },
+    { key: GROUP_SETTINGS_TAB_LOADOUTS, label: 'Loadouts' },
+    { key: GROUP_SETTINGS_TAB_EVENTS, label: 'Events' }
+  ]
+  const groupSettingsComingSoonByTab = {
+    [GROUP_SETTINGS_TAB_GROUP]: 'Group',
+    [GROUP_SETTINGS_TAB_LOADOUTS]: 'Loadouts',
+    [GROUP_SETTINGS_TAB_EVENTS]: 'Events'
+  }
+  const renderGroupSettingsComingSoon = (label) => (
+    <div className="group-settings-coming-soon">
+      <h3>{label}</h3>
+      <p>Coming soon.</p>
+    </div>
+  )
+  const renderGroupSettingsPanelContent = () => {
+    if (groupSettingsActiveTab === GROUP_SETTINGS_TAB_OVERRIDES) {
+      return renderOverridesEditorContent()
+    }
+    if (groupSettingsActiveTab === GROUP_SETTINGS_TAB_GROUP) {
+      return renderGroupSettingsContent()
+    }
+    if (groupSettingsActiveTab === GROUP_SETTINGS_TAB_TEAM) {
+      return renderTeamSettingsContent()
+    }
+    return renderGroupSettingsComingSoon(
+      groupSettingsComingSoonByTab[groupSettingsActiveTab] || 'Group'
+    )
+  }
+
+  const renderOverridesEditorContent = () => (
+    <>
+      <div className="settings-overrides-topbar">
+        <label htmlFor="settings-override-select" className="settings-overrides-label">Override</label>
+        <select
+          id="settings-override-select"
+          className="settings-overrides-select"
+          value={settingsTargetPlayer}
+          onChange={(e) => handleSettingsTargetChange(e.target.value)}
+        >
+          <option value={SETTINGS_ALL_PLAYERS}>Default</option>
+          {participants.map((id) => {
+            const hasOverride = !!playerOverrides[id]
+            const label = labelForParticipant(id)
+            return (
+              <option
+                key={id}
+                value={id}
+                style={hasOverride ? undefined : { color: 'var(--app-select-option-muted)' }}
+              >
+                {hasOverride ? label : `${label} (default weights)`}
+              </option>
+            )
+          })}
+        </select>
+        <button
+          className="settings-override-set-all-btn"
+          onClick={handleSetAllWeightsToOne}
+          disabled={settingsTargetIsReadOnly}
+        >
+          Set All 1
+        </button>
+        <button
+          className="settings-override-delete-btn"
+          onClick={handleDeleteSelectedOverride}
+          disabled={!hasSelectedOverride}
+        >
+          Delete
+        </button>
+        <button
+          className="settings-override-randomize-btn"
+          onClick={handleRandomizeSettingsWeights}
+          disabled={settingsTargetIsReadOnly}
+        >
+          <DiceIcon />
+          Randomize All
+        </button>
+      </div>
+      <div className="modal-body settings-page-body">
+        <div className="settings-page-layout">
+          <div className="settings-config-panel">
+            <h3 className="settings-section-title">Classes</h3>
+            <div className="weapons-settings-grid settings-top-classes-grid">
+              {classesList.map((classItem) => (
+                <div className={`weapon-settings-card ${getDisplayEnabledValue('classEnabled', classItem.key) ? '' : 'disabled'}`} key={classItem.key}>
+                  <div className="loadout-item-wrapper settings-weapon-wrapper">
+                    <div
+                      className={`loadout-item class-item settings-weapon-preview ${getDisplayEnabledValue('classEnabled', classItem.key) ? '' : 'disabled'}`}
+                      onClick={() => {
+                        if (!settingsTargetIsReadOnly) {
+                          updateSettingsMapValue('classEnabled', classItem.key, !getDisplayEnabledValue('classEnabled', classItem.key))
+                        }
+                      }}
+                    >
+                      <label className="weapon-enable-checkbox" title="Enable/disable this class in randomizer">
+                        <input
+                          type="checkbox"
+                          checked={getDisplayEnabledValue('classEnabled', classItem.key)}
+                          onChange={(e) => updateSettingsMapValue('classEnabled', classItem.key, e.target.checked)}
+                          onClick={(e) => e.stopPropagation()}
+                          disabled={settingsTargetIsReadOnly}
+                        />
+                      </label>
+                      {classItem.imageFile ? (
+                        <img
+                          src={classItem.imageFile}
+                          alt={classItem.name}
+                          className="class-image"
+                        />
+                      ) : (
+                        <span className="loadout-item-text">{classItem.name}</span>
+                      )}
+                    </div>
+                    <div className={`loadout-item-label ${getLoadoutLabelClass(classItem.name)}`}>
+                      <em>{classItem.name}</em>
+                    </div>
+                  </div>
+                  <div className="settings-weight-row">
+                    <input
+                      className="weapon-settings-input"
+                      type="text"
+                      placeholder="Value"
+                      value={getDisplayInputValue('classInputs', classItem.key) ?? '1'}
+                      onChange={(e) => updateSettingsMapValue('classInputs', classItem.key, e.target.value)}
+                      onBlur={(e) => {
+                        if (e.target.value.trim() === '') {
+                          updateSettingsMapValue('classInputs', classItem.key, '1')
+                        }
+                      }}
+                      disabled={settingsTargetIsReadOnly}
+                    />
+                    <span
+                      className={`settings-weight-percent ${getDisplayEnabledValue('classEnabled', classItem.key) ? '' : 'is-zero'}`}
+                      title="Weight share among enabled items"
+                    >
+                      {formatPercent(
+                        getSettingsWeightPercent(
+                          'classInputs',
+                          'classEnabled',
+                          classItem.key,
+                          classesList.map((item) => item.key)
+                        )
+                      )}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <h3 className="settings-section-title">Specializations</h3>
+            {specializationsByClass.map(({ className, specializations }) => (
+              <section key={className} className="settings-class-section">
+                <div className={`settings-class-title ${className}`}>
+                  {className.charAt(0).toUpperCase() + className.slice(1)}
+                </div>
+                <div className="weapons-settings-grid">
+                  {specializations.map((specialization) => (
+                    <div className={`weapon-settings-card ${getDisplayEnabledValue('specializationEnabled', specialization.key) ? '' : 'disabled'}`} key={specialization.key}>
+                      <div className="loadout-item-wrapper settings-weapon-wrapper">
+                        <div
+                          className={`loadout-item spec-item settings-weapon-preview ${getDisplayEnabledValue('specializationEnabled', specialization.key) ? '' : 'disabled'}`}
+                          onClick={() => {
+                            if (!settingsTargetIsReadOnly) {
+                              updateSettingsMapValue('specializationEnabled', specialization.key, !getDisplayEnabledValue('specializationEnabled', specialization.key))
+                            }
+                          }}
+                        >
+                          <label className="weapon-enable-checkbox" title="Enable/disable this specialization in randomizer">
+                            <input
+                              type="checkbox"
+                              checked={getDisplayEnabledValue('specializationEnabled', specialization.key)}
+                              onChange={(e) => updateSettingsMapValue('specializationEnabled', specialization.key, e.target.checked)}
+                              onClick={(e) => e.stopPropagation()}
+                              disabled={settingsTargetIsReadOnly}
+                            />
+                          </label>
+                          {specialization.imageFile ? (
+                            <img
+                              src={specialization.imageFile}
+                              alt={specialization.name}
+                              className="spec-image"
+                            />
+                          ) : (
+                            <span className="loadout-item-text">{specialization.name}</span>
+                          )}
+                        </div>
+                        <div className={`loadout-item-label ${getLoadoutLabelClass(specialization.name)}`}>
+                          <em>{specialization.name}</em>
+                        </div>
+                      </div>
+                      <div className="settings-weight-row">
+                        <input
+                          className="weapon-settings-input"
+                          type="text"
+                          placeholder="Value"
+                          value={getDisplayInputValue('specializationInputs', specialization.key) ?? '1'}
+                          onChange={(e) => updateSettingsMapValue('specializationInputs', specialization.key, e.target.value)}
+                          onBlur={(e) => {
+                            if (e.target.value.trim() === '') {
+                              updateSettingsMapValue('specializationInputs', specialization.key, '1')
+                            }
+                          }}
+                          disabled={settingsTargetIsReadOnly}
+                        />
+                        <span
+                          className={`settings-weight-percent ${getDisplayEnabledValue('specializationEnabled', specialization.key) ? '' : 'is-zero'}`}
+                          title="Weight share among enabled items"
+                        >
+                          {formatPercent(
+                            getSettingsWeightPercent(
+                              'specializationInputs',
+                              'specializationEnabled',
+                              specialization.key,
+                              specializations.map((item) => item.key)
+                            )
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+
+            <h3 className="settings-section-title">Weapons</h3>
+            {weaponsByClass.map(({ className, weapons }) => (
+              <section key={className} className="settings-class-section">
+                <div className={`settings-class-title ${className}`}>
+                  {className.charAt(0).toUpperCase() + className.slice(1)}
+                </div>
+                <div className="weapons-settings-grid">
+                  {weapons.map((weapon) => (
+                    <div className={`weapon-settings-card ${getDisplayEnabledValue('weaponEnabled', weapon.key) ? '' : 'disabled'}`} key={weapon.key}>
+                      <div className="loadout-item-wrapper settings-weapon-wrapper">
+                        <div
+                          className={`loadout-item weapon-item settings-weapon-preview ${getDisplayEnabledValue('weaponEnabled', weapon.key) ? '' : 'disabled'}`}
+                          onClick={() => {
+                            if (!settingsTargetIsReadOnly) {
+                              updateSettingsMapValue('weaponEnabled', weapon.key, !getDisplayEnabledValue('weaponEnabled', weapon.key))
+                            }
+                          }}
+                        >
+                          <label className="weapon-enable-checkbox" title="Enable/disable this weapon in randomizer">
+                            <input
+                              type="checkbox"
+                              checked={getDisplayEnabledValue('weaponEnabled', weapon.key)}
+                              onChange={(e) => updateSettingsMapValue('weaponEnabled', weapon.key, e.target.checked)}
+                              onClick={(e) => e.stopPropagation()}
+                              disabled={settingsTargetIsReadOnly}
+                            />
+                          </label>
+                          {weapon.imageFile ? (
+                            <img
+                              src={weapon.imageFile}
+                              alt={weapon.name}
+                              className="weapon-image"
+                            />
+                          ) : (
+                            <span className="loadout-item-text">{weapon.name}</span>
+                          )}
+                        </div>
+                        <div className={`loadout-item-label ${getLoadoutLabelClass(weapon.name)}`}>
+                          <em>{weapon.name}</em>
+                        </div>
+                      </div>
+                      <div className="settings-weight-row">
+                        <input
+                          className="weapon-settings-input"
+                          type="text"
+                          placeholder="Value"
+                          value={getDisplayInputValue('weaponInputs', weapon.key) ?? '1'}
+                          onChange={(e) => updateSettingsMapValue('weaponInputs', weapon.key, e.target.value)}
+                          onBlur={(e) => {
+                            if (e.target.value.trim() === '') {
+                              updateSettingsMapValue('weaponInputs', weapon.key, '1')
+                            }
+                          }}
+                          disabled={settingsTargetIsReadOnly}
+                        />
+                        <span
+                          className={`settings-weight-percent ${getDisplayEnabledValue('weaponEnabled', weapon.key) ? '' : 'is-zero'}`}
+                          title="Weight share among enabled items"
+                        >
+                          {formatPercent(
+                            getSettingsWeightPercent(
+                              'weaponInputs',
+                              'weaponEnabled',
+                              weapon.key,
+                              weapons.map((item) => item.key)
+                            )
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+
+            <h3 className="settings-section-title">Gadgets</h3>
+            {gadgetsByClass.map(({ className, gadgets }) => (
+              <section key={className} className="settings-class-section">
+                <div className={`settings-class-title ${className}`}>
+                  {className.charAt(0).toUpperCase() + className.slice(1)}
+                </div>
+                <div className="weapons-settings-grid">
+                  {gadgets.map((gadget) => {
+                    const isModeForcedDisabled = isGadgetForcedDisabledForMode(className, gadget.name)
+                    const isGadgetEnabled = getDisplayEnabledValue('gadgetEnabled', gadget.key)
+                    return (
+                      <div className={`weapon-settings-card ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'disabled'}`} key={gadget.key}>
+                        <div className="loadout-item-wrapper settings-weapon-wrapper">
+                          <div
+                            className={`loadout-item gadget-item settings-weapon-preview ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'disabled'}`}
+                            onClick={() => {
+                              if (!settingsTargetIsReadOnly && !isModeForcedDisabled) {
+                                updateSettingsMapValue('gadgetEnabled', gadget.key, !isGadgetEnabled)
+                              }
+                            }}
+                          >
+                            <label className="weapon-enable-checkbox" title="Enable/disable this gadget in randomizer">
+                              <input
+                                type="checkbox"
+                                checked={!isModeForcedDisabled && isGadgetEnabled}
+                                onChange={(e) => updateSettingsMapValue('gadgetEnabled', gadget.key, e.target.checked)}
+                                onClick={(e) => e.stopPropagation()}
+                                disabled={settingsTargetIsReadOnly || isModeForcedDisabled}
+                              />
+                            </label>
+                            {gadget.imageFile ? (
+                              <img
+                                src={gadget.imageFile}
+                                alt={gadget.name}
+                                className="gadget-image"
+                              />
+                            ) : (
+                              <span className="loadout-item-text">{gadget.name}</span>
+                            )}
+                          </div>
+                          <div className={`loadout-item-label ${getLoadoutLabelClass(gadget.name)}`}>
+                            <em>{gadget.name}</em>
+                          </div>
+                        </div>
+                        <div className="settings-weight-row">
+                          <input
+                            className="weapon-settings-input"
+                            type="text"
+                            placeholder="Value"
+                            value={getDisplayInputValue('gadgetInputs', gadget.key) ?? '1'}
+                            onChange={(e) => updateSettingsMapValue('gadgetInputs', gadget.key, e.target.value)}
+                            onBlur={(e) => {
+                              if (e.target.value.trim() === '') {
+                                updateSettingsMapValue('gadgetInputs', gadget.key, '1')
+                              }
+                            }}
+                            disabled={settingsTargetIsReadOnly}
+                          />
+                          <span
+                            className={`settings-weight-percent ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'is-zero'}`}
+                            title="Weight share among enabled items"
+                          >
+                            {formatPercent(
+                              getSettingsWeightPercent(
+                                'gadgetInputs',
+                                'gadgetEnabled',
+                                gadget.key,
+                                gadgets.map((item) => item.key)
+                              )
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+
+  const renderGroupSettingsContent = () => (
+    <div className="modal-body">
+      <div className="group-settings-content">
+        <h3>Group Name</h3>
+        <div className="group-name-settings-row">
+          <input
+            id="group-settings-name"
+            className="access-auth-input group-name-settings-input"
+            type="text"
+            value={groupNameDraft}
+            onChange={(e) => {
+              setGroupNameDraft(e.target.value)
+              if (groupNameError) setGroupNameError('')
+              if (groupNameStatus) setGroupNameStatus('')
+            }}
+            disabled={!canEditGroupName || groupNameBusy}
+            maxLength={64}
+          />
+          <button
+            type="button"
+            className="randomize-btn team-settings-invite-copy-btn"
+            onClick={handleSaveGroupName}
+            disabled={
+              !canEditGroupName ||
+              groupNameBusy ||
+              !String(groupNameDraft || '').trim() ||
+              String(groupNameDraft || '').trim() === String(activeGroupName || '').trim()
+            }
+          >
+            {groupNameBusy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        {groupNameStatus ? <p className="settings-description">{groupNameStatus}</p> : null}
+        {groupNameError ? <p className="access-modal-error">{groupNameError}</p> : null}
+        <h3>Invite to Group</h3>
+        <p className="settings-description">
+          Share this invite link or join code with players you want to add to this group.
+        </p>
+      {groupInviteStatusMessage ? (
+        <p className="settings-description">{groupInviteStatusMessage}</p>
+      ) : null}
+      {groupsLoadError ? <p className="access-modal-error">{groupsLoadError}</p> : null}
+        <span className="team-settings-invite-label">Invite link</span>
+        <div className="team-settings-invite-row">
+          <div
+            className="team-settings-invite-link-display"
+            title={activeGroupInviteLink || 'No invite link available'}
+          >
+            {activeGroupInviteLink || '--'}
+          </div>
+          <button
+            type="button"
+            className="randomize-btn team-settings-invite-copy-btn"
+            onClick={() => handleCopyInviteLink(activeGroupJoinCode)}
+            disabled={!activeGroupJoinCode}
+          >
+            Copy link
+          </button>
+        </div>
+        <label className="team-settings-invite-label" htmlFor="group-settings-join-code">
+          Join code
+        </label>
+        <div className="team-settings-invite-row">
+        <div className="team-settings-join-code-wrap">
+          <input
+            id="group-settings-join-code"
+            className="access-auth-input team-settings-invite-input"
+            type="text"
+            value={activeGroupJoinCode}
+            readOnly
+          />
+          {groupRole === 'owner' || groupRole === 'admin' ? (
+            <button
+              type="button"
+              className="team-settings-rotate-input-icon"
+              onClick={handleRotateInviteCode}
+              disabled={!activeGroupId || rotateInviteBusy}
+              title={rotateInviteBusy ? 'Rotating code…' : 'Rotate join code'}
+              aria-label={rotateInviteBusy ? 'Rotating code' : 'Rotate join code'}
+            >
+              <RefreshIcon />
+            </button>
+          ) : null}
+        </div>
+          <button
+            type="button"
+            className="randomize-btn team-settings-invite-copy-btn"
+            onClick={() => handleCopyJoinCode(activeGroupJoinCode)}
+            disabled={!activeGroupJoinCode}
+          >
+            Copy code
+          </button>
+        </div>
+        <h3>Banner gradient</h3>
+        <p className="settings-description">
+          Choose two colors for this group banner.
+        </p>
+        {groupGradientStatus ? (
+          <p className="settings-description">{groupGradientStatus}</p>
+        ) : null}
+        {groupGradientError ? (
+          <p className="access-modal-error">{groupGradientError}</p>
+        ) : null}
+        <div className="group-gradient-settings-row">
+          <label className="group-gradient-settings-color-field" htmlFor="group-gradient-color-a">
+            <span className="team-settings-invite-label">Color A</span>
+            <input
+              id="group-gradient-color-a"
+              type="color"
+              value={groupGradientColorA}
+              onChange={(e) => {
+                setGroupGradientColorA(e.target.value)
+                if (groupGradientError) setGroupGradientError('')
+                if (groupGradientStatus) setGroupGradientStatus('')
+              }}
+              disabled={!canEditGroupGradient || groupGradientBusy}
+            />
+          </label>
+          <label className="group-gradient-settings-color-field" htmlFor="group-gradient-color-b">
+            <span className="team-settings-invite-label">Color B</span>
+            <input
+              id="group-gradient-color-b"
+              type="color"
+              value={groupGradientColorB}
+              onChange={(e) => {
+                setGroupGradientColorB(e.target.value)
+                if (groupGradientError) setGroupGradientError('')
+                if (groupGradientStatus) setGroupGradientStatus('')
+              }}
+              disabled={!canEditGroupGradient || groupGradientBusy}
+            />
+          </label>
+          <button
+            type="button"
+            className="randomize-btn team-settings-invite-copy-btn group-gradient-settings-save-btn"
+            onClick={handleSaveGroupGradient}
+            disabled={!canEditGroupGradient || groupGradientBusy || !hasGroupGradientChanges}
+          >
+            {groupGradientBusy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        <div className="group-gradient-preview-wrap">
+          <span className="team-settings-invite-label">Dashboard preview</span>
+          <div className="groups-dashboard-group-tile group-gradient-preview-tile" aria-hidden={true}>
+            <div className="groups-dashboard-group-tile-banner" style={groupGradientPreviewStyle} />
+            <div className="groups-dashboard-group-tile-body">
+              {(groupGradientPreviewProfiles.length > 0 || groupGradientPreviewOverflow > 0) ? (
+                <div className="groups-dashboard-member-chips">
+                  {groupGradientPreviewProfiles.map((profile, idx) => {
+                    const uid = profile?.user_id || `member-${idx}`
+                    const label = (profile?.username || profile?.display_name || 'Member').trim()
+                    const avatarSrc = participantAvatarSrc(profile || {}, label)
+                    return (
+                      <span
+                        key={uid}
+                        className="groups-dashboard-member-chip"
+                        style={{
+                          background: memberChipColor(uid),
+                          zIndex: DASHBOARD_MEMBER_CHIP_PREVIEW - idx
+                        }}
+                      >
+                        <img
+                          src={avatarSrc}
+                          alt=""
+                          className="groups-dashboard-member-chip-img"
+                          loading="lazy"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none'
+                            const initialsNode = e.currentTarget.nextElementSibling
+                            if (initialsNode) initialsNode.style.display = 'inline-flex'
+                          }}
+                        />
+                        <span className="groups-dashboard-member-chip-fallback">
+                          {twoLetterAvatarLabel(label)}
+                        </span>
+                      </span>
+                    )
+                  })}
+                  {groupGradientPreviewOverflow > 0 ? (
+                    <span className="groups-dashboard-member-overflow">+{groupGradientPreviewOverflow}</span>
+                  ) : null}
+                </div>
+              ) : null}
+              <span className="groups-dashboard-group-tile-name">{activeGroupName || 'Your Group'}</span>
+              <span className="groups-dashboard-group-tile-meta">
+                {activeGroupJoinCode || 'ABCDEFGH'} · {String(groupRole || 'member').replace(/^./, (c) => c.toUpperCase())}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+
+  const renderTeamSettingsContent = () => (
+    <div className="modal-body">
+      <label className="settings-checkbox">
+        <input
+          type="checkbox"
+          checked={balancedTeams}
+          onChange={(e) => setBalancedTeams(e.target.checked)}
+        />
+        <span>Balanced Teams</span>
+      </label>
+      <p className="settings-description">
+        When enabled, teams will be balanced evenly. When disabled, players are randomly assigned using dice rolls.
+      </p>
+
+      <label className="settings-checkbox">
+        <input
+          type="checkbox"
+          checked={fillFirst}
+          onChange={(e) => setFillFirst(e.target.checked)}
+        />
+        <span>Fill First</span>
+      </label>
+      <p className="settings-description">
+        When enabled, the randomizer will attempt to fill teams completely before moving to the next team. Uses the minimum number of teams needed to hold all players.
+      </p>
+
+      <div className="keep-separate-section">
+        <h3>Keep Separate</h3>
+        <p className="settings-description">
+          Players in these pairs will be placed on opposite teams whenever possible.
+        </p>
+        <div className="keep-separate-add-row">
+          <select
+            value={keepSeparateA}
+            onChange={(e) => setKeepSeparateA(e.target.value)}
+            disabled={participants.length < 2}
+          >
+            {participants.map((id) => (
+              <option key={`a-${id}`} value={id}>
+                {labelForParticipant(id)}
+              </option>
+            ))}
+          </select>
+          <select
+            value={keepSeparateB}
+            onChange={(e) => setKeepSeparateB(e.target.value)}
+            disabled={participants.length < 2}
+          >
+            {participants
+              .filter((id) => id !== keepSeparateA)
+              .map((id) => (
+                <option key={`b-${id}`} value={id}>
+                  {labelForParticipant(id)}
+                </option>
+              ))}
+          </select>
+          <button
+            className="randomize-btn"
+            onClick={handleAddKeepSeparatePair}
+            disabled={participants.length < 2 || !keepSeparateA || !keepSeparateB || keepSeparateA === keepSeparateB}
+          >
+            Add
+          </button>
+        </div>
+        <div className="keep-separate-list">
+          {keepSeparatePairs.length === 0 ? (
+            <p className="empty-state">No keep separate pairs yet</p>
+          ) : (
+            keepSeparatePairs.map((pair) => (
+              <div key={pair.id} className="participant-item">
+                <span>
+                  {labelForParticipant(pair.playerA)} vs {labelForParticipant(pair.playerB)}
+                </span>
+                <button onClick={() => handleRemoveKeepSeparatePair(pair.id)}>×</button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <div className={`App ${isViewOnlyMode ? 'is-view-only' : ''}`}>
@@ -3863,7 +5226,14 @@ function App() {
             <FontAwesomeIcon icon={faArrowLeft} className={`${FA_ICON_CLASS} dashboard-nav-arrow-icon`} aria-hidden />
           </button>
         </div>
-        <h1 className="app-title">The Finals Customs</h1>
+        <div className="app-title-block">
+          <h1 className="app-title">The Finals Customs</h1>
+          {activeGroupName ? (
+            <span className="app-current-group-name" title={activeGroupName}>
+              {activeGroupName}
+            </span>
+          ) : null}
+        </div>
         {/* Top Right Controls */}
         <div className="top-right-controls">
           {!isViewOnlyMode && (
@@ -4320,15 +5690,22 @@ function App() {
                   <div className="participants-header-actions">
                     <button
                       className="settings-icon-btn"
-                      onClick={() => setIsTeamSettingsModalOpen(true)}
-                      title="Team Settings"
-                      aria-label="Open team settings"
+                      onClick={() => {
+                        setIsSettingsModalOpen(false)
+                        setGroupSettingsActiveTab(GROUP_SETTINGS_TAB_OVERRIDES)
+                        setIsGroupSettingsModalOpen(true)
+                      }}
+                      title="Group Settings"
+                      aria-label="Open group settings"
                     >
                       <SettingsIcon />
                     </button>
                     <button
                       className="settings-icon-btn"
-                      onClick={() => setIsSettingsModalOpen(true)}
+                      onClick={() => {
+                        setIsGroupSettingsModalOpen(false)
+                        setIsSettingsModalOpen(true)
+                      }}
                       title="Randomizer Overrides"
                       aria-label="Open randomizer overrides"
                     >
@@ -5663,8 +7040,14 @@ function App() {
             aria-labelledby="user-settings-modal-title"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="modal-header">
-              <h2 id="user-settings-modal-title">User settings</h2>
+            <div className="modal-header settings-modal-header">
+              <div className="settings-modal-branding">
+                <span className="settings-modal-brand-app">The Finals Customs</span>
+                <span className="settings-modal-brand-group" title={settingsHeaderGroupTitle}>
+                  {settingsHeaderGroupTitle}
+                </span>
+                <h2 id="user-settings-modal-title">User settings</h2>
+              </div>
               <button className="modal-close-btn" onClick={() => setIsUserSettingsModalOpen(false)} aria-label="Close modal">
                 <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
               </button>
@@ -5683,458 +7066,72 @@ function App() {
         </div>
       )}
 
-      {/* Settings Modal */}
-      {isSettingsModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsSettingsModalOpen(false)}>
-          <div className="modal-content settings-page-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Settings</h2>
+      {isGroupSettingsModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsGroupSettingsModalOpen(false)}>
+          <div
+            className="modal-content settings-page-modal group-settings-modal"
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header settings-modal-header group-settings-modal-header">
+              <div className="settings-modal-branding">
+                <span className="settings-modal-brand-app">The Finals Customs</span>
+                <span className="settings-modal-brand-group" title={settingsHeaderGroupTitle}>
+                  {settingsHeaderGroupTitle}
+                </span>
+              </div>
               <div className="settings-header-actions">
-                <button
-                  className="randomize-all-btn settings-randomize-weights-btn"
-                  onClick={handleRandomizeSettingsWeights}
-                  disabled={settingsTargetIsReadOnly}
-                >
-                  <DiceIcon />
-                  Randomize Weights
-                </button>
-                <button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)} aria-label="Close modal">
+                <button className="modal-close-btn" onClick={() => setIsGroupSettingsModalOpen(false)} aria-label="Close modal">
                   <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
                 </button>
               </div>
             </div>
-            <div className="settings-overrides-topbar">
-              <label htmlFor="settings-override-select" className="settings-overrides-label">Override</label>
-              <select
-                id="settings-override-select"
-                className="settings-overrides-select"
-                value={settingsTargetPlayer}
-                onChange={(e) => handleSettingsTargetChange(e.target.value)}
-              >
-                <option value={SETTINGS_ALL_PLAYERS}>Default</option>
-                {participants.map((id) => {
-                  const hasOverride = !!playerOverrides[id]
-                  const label = labelForParticipant(id)
-                  return (
-                    <option
-                      key={id}
-                      value={id}
-                      style={hasOverride ? undefined : { color: 'var(--app-select-option-muted)' }}
-                    >
-                      {hasOverride ? label : `${label} (default weights)`}
-                    </option>
-                  )
-                })}
-              </select>
-              <button
-                className="settings-override-set-all-btn"
-                onClick={handleSetAllWeightsToOne}
-                disabled={settingsTargetIsReadOnly}
-              >
-                Set All 1
-              </button>
-              <button
-                className="settings-override-delete-btn"
-                onClick={handleDeleteSelectedOverride}
-                disabled={!hasSelectedOverride}
-              >
-                Delete
-              </button>
-            </div>
-            <div className="modal-body settings-page-body">
-              <div className="settings-page-layout">
-                <div className="settings-config-panel">
-              <h3 className="settings-section-title">Classes</h3>
-              <div className="weapons-settings-grid settings-top-classes-grid">
-                {classesList.map((classItem) => (
-                  <div className={`weapon-settings-card ${getDisplayEnabledValue('classEnabled', classItem.key) ? '' : 'disabled'}`} key={classItem.key}>
-                    <div className="loadout-item-wrapper settings-weapon-wrapper">
-                      <div
-                        className={`loadout-item class-item settings-weapon-preview ${getDisplayEnabledValue('classEnabled', classItem.key) ? '' : 'disabled'}`}
-                        onClick={() => {
-                          if (!settingsTargetIsReadOnly) {
-                            updateSettingsMapValue('classEnabled', classItem.key, !getDisplayEnabledValue('classEnabled', classItem.key))
-                          }
-                        }}
-                      >
-                        <label className="weapon-enable-checkbox" title="Enable/disable this class in randomizer">
-                          <input
-                            type="checkbox"
-                            checked={getDisplayEnabledValue('classEnabled', classItem.key)}
-                            onChange={(e) => updateSettingsMapValue('classEnabled', classItem.key, e.target.checked)}
-                            onClick={(e) => e.stopPropagation()}
-                            disabled={settingsTargetIsReadOnly}
-                          />
-                        </label>
-                        {classItem.imageFile ? (
-                          <img
-                            src={classItem.imageFile}
-                            alt={classItem.name}
-                            className="class-image"
-                          />
-                        ) : (
-                          <span className="loadout-item-text">{classItem.name}</span>
-                        )}
-                      </div>
-                      <div className={`loadout-item-label ${getLoadoutLabelClass(classItem.name)}`}>
-                        <em>{classItem.name}</em>
-                      </div>
-                    </div>
-                    <div className="settings-weight-row">
-                      <input
-                        className="weapon-settings-input"
-                        type="text"
-                        placeholder="Value"
-                        value={getDisplayInputValue('classInputs', classItem.key) ?? '1'}
-                        onChange={(e) => updateSettingsMapValue('classInputs', classItem.key, e.target.value)}
-                        onBlur={(e) => {
-                          if (e.target.value.trim() === '') {
-                            updateSettingsMapValue('classInputs', classItem.key, '1')
-                          }
-                        }}
-                        disabled={settingsTargetIsReadOnly}
-                      />
-                      <span
-                        className={`settings-weight-percent ${getDisplayEnabledValue('classEnabled', classItem.key) ? '' : 'is-zero'}`}
-                        title="Weight share among enabled items"
-                      >
-                        {formatPercent(
-                          getSettingsWeightPercent(
-                            'classInputs',
-                            'classEnabled',
-                            classItem.key,
-                            classesList.map((item) => item.key)
-                          )
-                        )}
-                      </span>
-                    </div>
-                  </div>
+            <div className="group-settings-modal-body">
+              <nav className="group-settings-tabs" aria-label="Group settings sections">
+                {groupSettingsTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={[
+                      'group-settings-tab-btn',
+                      groupSettingsActiveTab === tab.key && 'group-settings-tab-btn--active'
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                    onClick={() => setGroupSettingsActiveTab(tab.key)}
+                  >
+                    {tab.label}
+                  </button>
                 ))}
-              </div>
-
-              <h3 className="settings-section-title">Specializations</h3>
-              {specializationsByClass.map(({ className, specializations }) => (
-                <section key={className} className="settings-class-section">
-                  <div className={`settings-class-title ${className}`}>
-                    {className.charAt(0).toUpperCase() + className.slice(1)}
-                  </div>
-                  <div className="weapons-settings-grid">
-                    {specializations.map((specialization) => (
-                      <div className={`weapon-settings-card ${getDisplayEnabledValue('specializationEnabled', specialization.key) ? '' : 'disabled'}`} key={specialization.key}>
-                        <div className="loadout-item-wrapper settings-weapon-wrapper">
-                          <div
-                            className={`loadout-item spec-item settings-weapon-preview ${getDisplayEnabledValue('specializationEnabled', specialization.key) ? '' : 'disabled'}`}
-                            onClick={() => {
-                              if (!settingsTargetIsReadOnly) {
-                                updateSettingsMapValue('specializationEnabled', specialization.key, !getDisplayEnabledValue('specializationEnabled', specialization.key))
-                              }
-                            }}
-                          >
-                            <label className="weapon-enable-checkbox" title="Enable/disable this specialization in randomizer">
-                              <input
-                                type="checkbox"
-                                checked={getDisplayEnabledValue('specializationEnabled', specialization.key)}
-                                onChange={(e) => updateSettingsMapValue('specializationEnabled', specialization.key, e.target.checked)}
-                                onClick={(e) => e.stopPropagation()}
-                                disabled={settingsTargetIsReadOnly}
-                              />
-                            </label>
-                            {specialization.imageFile ? (
-                              <img
-                                src={specialization.imageFile}
-                                alt={specialization.name}
-                                className="spec-image"
-                              />
-                            ) : (
-                              <span className="loadout-item-text">{specialization.name}</span>
-                            )}
-                          </div>
-                          <div className={`loadout-item-label ${getLoadoutLabelClass(specialization.name)}`}>
-                            <em>{specialization.name}</em>
-                          </div>
-                        </div>
-                        <div className="settings-weight-row">
-                          <input
-                            className="weapon-settings-input"
-                            type="text"
-                            placeholder="Value"
-                            value={getDisplayInputValue('specializationInputs', specialization.key) ?? '1'}
-                            onChange={(e) => updateSettingsMapValue('specializationInputs', specialization.key, e.target.value)}
-                            onBlur={(e) => {
-                              if (e.target.value.trim() === '') {
-                                updateSettingsMapValue('specializationInputs', specialization.key, '1')
-                              }
-                            }}
-                            disabled={settingsTargetIsReadOnly}
-                          />
-                          <span
-                            className={`settings-weight-percent ${getDisplayEnabledValue('specializationEnabled', specialization.key) ? '' : 'is-zero'}`}
-                            title="Weight share among enabled items"
-                          >
-                            {formatPercent(
-                              getSettingsWeightPercent(
-                                'specializationInputs',
-                                'specializationEnabled',
-                                specialization.key,
-                                specializations.map((item) => item.key)
-                              )
-                            )}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              ))}
-
-              <h3 className="settings-section-title">Weapons</h3>
-              {weaponsByClass.map(({ className, weapons }) => (
-                <section key={className} className="settings-class-section">
-                  <div className={`settings-class-title ${className}`}>
-                    {className.charAt(0).toUpperCase() + className.slice(1)}
-                  </div>
-                  <div className="weapons-settings-grid">
-                    {weapons.map((weapon) => (
-                      <div className={`weapon-settings-card ${getDisplayEnabledValue('weaponEnabled', weapon.key) ? '' : 'disabled'}`} key={weapon.key}>
-                        <div className="loadout-item-wrapper settings-weapon-wrapper">
-                          <div
-                            className={`loadout-item weapon-item settings-weapon-preview ${getDisplayEnabledValue('weaponEnabled', weapon.key) ? '' : 'disabled'}`}
-                            onClick={() => {
-                              if (!settingsTargetIsReadOnly) {
-                                updateSettingsMapValue('weaponEnabled', weapon.key, !getDisplayEnabledValue('weaponEnabled', weapon.key))
-                              }
-                            }}
-                          >
-                            <label className="weapon-enable-checkbox" title="Enable/disable this weapon in randomizer">
-                              <input
-                                type="checkbox"
-                                checked={getDisplayEnabledValue('weaponEnabled', weapon.key)}
-                                onChange={(e) => updateSettingsMapValue('weaponEnabled', weapon.key, e.target.checked)}
-                                onClick={(e) => e.stopPropagation()}
-                                disabled={settingsTargetIsReadOnly}
-                              />
-                            </label>
-                            {weapon.imageFile ? (
-                              <img
-                                src={weapon.imageFile}
-                                alt={weapon.name}
-                                className="weapon-image"
-                              />
-                            ) : (
-                              <span className="loadout-item-text">{weapon.name}</span>
-                            )}
-                          </div>
-                          <div className={`loadout-item-label ${getLoadoutLabelClass(weapon.name)}`}>
-                            <em>{weapon.name}</em>
-                          </div>
-                        </div>
-                        <div className="settings-weight-row">
-                          <input
-                            className="weapon-settings-input"
-                            type="text"
-                            placeholder="Value"
-                            value={getDisplayInputValue('weaponInputs', weapon.key) ?? '1'}
-                            onChange={(e) => updateSettingsMapValue('weaponInputs', weapon.key, e.target.value)}
-                            onBlur={(e) => {
-                              if (e.target.value.trim() === '') {
-                                updateSettingsMapValue('weaponInputs', weapon.key, '1')
-                              }
-                            }}
-                            disabled={settingsTargetIsReadOnly}
-                          />
-                          <span
-                            className={`settings-weight-percent ${getDisplayEnabledValue('weaponEnabled', weapon.key) ? '' : 'is-zero'}`}
-                            title="Weight share among enabled items"
-                          >
-                            {formatPercent(
-                              getSettingsWeightPercent(
-                                'weaponInputs',
-                                'weaponEnabled',
-                                weapon.key,
-                                weapons.map((item) => item.key)
-                              )
-                            )}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              ))}
-
-              <h3 className="settings-section-title">Gadgets</h3>
-              {gadgetsByClass.map(({ className, gadgets }) => (
-                <section key={className} className="settings-class-section">
-                  <div className={`settings-class-title ${className}`}>
-                    {className.charAt(0).toUpperCase() + className.slice(1)}
-                  </div>
-                  <div className="weapons-settings-grid">
-                    {gadgets.map((gadget) => {
-                      const isModeForcedDisabled = isGadgetForcedDisabledForMode(className, gadget.name)
-                      const isGadgetEnabled = getDisplayEnabledValue('gadgetEnabled', gadget.key)
-                      return (
-                      <div className={`weapon-settings-card ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'disabled'}`} key={gadget.key}>
-                        <div className="loadout-item-wrapper settings-weapon-wrapper">
-                          <div
-                            className={`loadout-item gadget-item settings-weapon-preview ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'disabled'}`}
-                            onClick={() => {
-                              if (!settingsTargetIsReadOnly && !isModeForcedDisabled) {
-                                updateSettingsMapValue('gadgetEnabled', gadget.key, !isGadgetEnabled)
-                              }
-                            }}
-                          >
-                            <label className="weapon-enable-checkbox" title="Enable/disable this gadget in randomizer">
-                              <input
-                                type="checkbox"
-                                checked={!isModeForcedDisabled && isGadgetEnabled}
-                                onChange={(e) => updateSettingsMapValue('gadgetEnabled', gadget.key, e.target.checked)}
-                                onClick={(e) => e.stopPropagation()}
-                                disabled={settingsTargetIsReadOnly || isModeForcedDisabled}
-                              />
-                            </label>
-                            {gadget.imageFile ? (
-                              <img
-                                src={gadget.imageFile}
-                                alt={gadget.name}
-                                className="gadget-image"
-                              />
-                            ) : (
-                              <span className="loadout-item-text">{gadget.name}</span>
-                            )}
-                          </div>
-                          <div className={`loadout-item-label ${getLoadoutLabelClass(gadget.name)}`}>
-                            <em>{gadget.name}</em>
-                          </div>
-                        </div>
-                        <div className="settings-weight-row">
-                          <input
-                            className="weapon-settings-input"
-                            type="text"
-                            placeholder="Value"
-                            value={getDisplayInputValue('gadgetInputs', gadget.key) ?? '1'}
-                            onChange={(e) => updateSettingsMapValue('gadgetInputs', gadget.key, e.target.value)}
-                            onBlur={(e) => {
-                              if (e.target.value.trim() === '') {
-                                updateSettingsMapValue('gadgetInputs', gadget.key, '1')
-                              }
-                            }}
-                            disabled={settingsTargetIsReadOnly}
-                          />
-                          <span
-                            className={`settings-weight-percent ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'is-zero'}`}
-                            title="Weight share among enabled items"
-                          >
-                            {formatPercent(
-                              getSettingsWeightPercent(
-                                'gadgetInputs',
-                                'gadgetEnabled',
-                                gadget.key,
-                                gadgets.map((item) => item.key)
-                              )
-                            )}
-                          </span>
-                        </div>
-                      </div>
-                    )})}
-                  </div>
-                </section>
-              ))}
-                </div>
-              </div>
+              </nav>
+              <section className="group-settings-panel">
+                {renderGroupSettingsPanelContent()}
+              </section>
             </div>
           </div>
         </div>
       )}
 
-      {/* Team Settings Modal */}
-      {isTeamSettingsModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsTeamSettingsModalOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Team Settings</h2>
-              <button className="modal-close-btn" onClick={() => setIsTeamSettingsModalOpen(false)} aria-label="Close modal">
-                <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
-              </button>
-            </div>
-            <div className="modal-body">
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={balancedTeams}
-                  onChange={(e) => setBalancedTeams(e.target.checked)}
-                />
-                <span>Balanced Teams</span>
-              </label>
-              <p className="settings-description">
-                When enabled, teams will be balanced evenly. When disabled, players are randomly assigned using dice rolls.
-              </p>
-
-              <label className="settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={fillFirst}
-                  onChange={(e) => setFillFirst(e.target.checked)}
-                />
-                <span>Fill First</span>
-              </label>
-              <p className="settings-description">
-                When enabled, the randomizer will attempt to fill teams completely before moving to the next team. Uses the minimum number of teams needed to hold all players.
-              </p>
-
-              <div className="keep-separate-section">
-                <h3>Keep Separate</h3>
-                <p className="settings-description">
-                  Players in these pairs will be placed on opposite teams whenever possible.
-                </p>
-                <div className="keep-separate-add-row">
-                  <select
-                    value={keepSeparateA}
-                    onChange={(e) => setKeepSeparateA(e.target.value)}
-                    disabled={participants.length < 2}
-                  >
-                    {participants.map((id) => (
-                      <option key={`a-${id}`} value={id}>
-                        {labelForParticipant(id)}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={keepSeparateB}
-                    onChange={(e) => setKeepSeparateB(e.target.value)}
-                    disabled={participants.length < 2}
-                  >
-                    {participants
-                      .filter((id) => id !== keepSeparateA)
-                      .map((id) => (
-                        <option key={`b-${id}`} value={id}>
-                          {labelForParticipant(id)}
-                        </option>
-                      ))}
-                  </select>
-                  <button
-                    className="randomize-btn"
-                    onClick={handleAddKeepSeparatePair}
-                    disabled={participants.length < 2 || !keepSeparateA || !keepSeparateB || keepSeparateA === keepSeparateB}
-                  >
-                    Add
-                  </button>
-                </div>
-                <div className="keep-separate-list">
-                  {keepSeparatePairs.length === 0 ? (
-                    <p className="empty-state">No keep separate pairs yet</p>
-                  ) : (
-                    keepSeparatePairs.map((pair) => (
-                      <div key={pair.id} className="participant-item">
-                        <span>
-                          {labelForParticipant(pair.playerA)} vs {labelForParticipant(pair.playerB)}
-                        </span>
-                        <button onClick={() => handleRemoveKeepSeparatePair(pair.id)}>×</button>
-                      </div>
-                    ))
-                  )}
-                </div>
+      {/* Settings Modal */}
+      {isSettingsModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsSettingsModalOpen(false)}>
+          <div className="modal-content settings-page-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header settings-modal-header">
+              <div className="settings-modal-branding">
+                <span className="settings-modal-brand-app">The Finals Customs</span>
+                <span className="settings-modal-brand-group" title={settingsHeaderGroupTitle}>
+                  {settingsHeaderGroupTitle}
+                </span>
+                <h2 id="legacy-settings-modal-title">Settings</h2>
+              </div>
+              <div className="settings-header-actions">
+                <button className="modal-close-btn" onClick={() => setIsSettingsModalOpen(false)} aria-label="Close modal">
+                  <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
+                </button>
               </div>
             </div>
+            {renderOverridesEditorContent()}
           </div>
         </div>
       )}

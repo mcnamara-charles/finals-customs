@@ -9,6 +9,10 @@ export {
   removeGroupMember,
   leaveGroup,
   transferGroupOwnership,
+  rotateGroupJoinCode,
+  deleteGroup,
+  setGroupName,
+  setGroupGradientColors,
   GROUP_MANUAL_STATUSES,
   normalizeGroupManualStatus
 } from '../api/groups.js'

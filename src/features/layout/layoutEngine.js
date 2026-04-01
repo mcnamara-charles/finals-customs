@@ -33,6 +33,18 @@ const LOADOUT_GRID_CANDIDATES = [
   { rows: 3, cols: 2 }
 ]
 
+const toPositiveFiniteInt = (value) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return null
+  return Math.max(1, Math.floor(numeric))
+}
+
+const toNonNegativeFiniteNumber = (value) => {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric < 0) return null
+  return numeric
+}
+
 const getTeamGridCandidates = (teams) => {
   if (teams === 2) return [{ rows: 1, cols: 2 }, { rows: 2, cols: 1 }]
   if (teams === 3) return [{ rows: 1, cols: 3 }, { rows: 3, cols: 1 }, { rows: 2, cols: 2 }]
@@ -76,7 +88,11 @@ export const computeDynamicLayout = ({
   playerNameRowHeight,
   assignOptionsReserve
 }) => {
-  if (!panelWidth || !panelHeight || !teams || !playersPerTeam) return null
+  const safePanelWidth = toPositiveFiniteInt(panelWidth)
+  const safePanelHeight = toPositiveFiniteInt(panelHeight)
+  const safeTeams = toPositiveFiniteInt(teams)
+  const safePlayersPerTeam = toPositiveFiniteInt(playersPerTeam)
+  if (!safePanelWidth || !safePanelHeight || !safeTeams || !safePlayersPerTeam) return null
   const isMobileLayout = Number.isFinite(viewportWidth) && viewportWidth <= MOBILE_LAYOUT_BREAKPOINT_PX
   const isCompactLayout = Number.isFinite(viewportWidth) && viewportWidth <= COMPACT_LAYOUT_BREAKPOINT_PX
   const loadoutGridCandidates = isMobileLayout ? [{ rows: 2, cols: 3 }] : LOADOUT_GRID_CANDIDATES
@@ -91,8 +107,8 @@ export const computeDynamicLayout = ({
       ? playerNameRowHeight
       : DYNAMIC_LAYOUT_METRICS.playerNameRowHeight
   const measuredAssignOptionsReserve =
-    Number.isFinite(assignOptionsReserve) && assignOptionsReserve >= 0
-      ? assignOptionsReserve
+    toNonNegativeFiniteNumber(assignOptionsReserve) !== null
+      ? Number(assignOptionsReserve)
       : null
   const effectiveSlotPaddingX = isCompactLayout
     ? DYNAMIC_LAYOUT_METRICS.slotPaddingX / 2
@@ -102,15 +118,15 @@ export const computeDynamicLayout = ({
     : DYNAMIC_LAYOUT_METRICS.slotPaddingY
   const effectiveSlotContentGap = isCompactLayout ? 0 : DYNAMIC_LAYOUT_METRICS.slotContentGap
 
-  const availablePanelWidth = panelWidth - DYNAMIC_LAYOUT_METRICS.panelPaddingX
-  const availablePanelHeight = panelHeight - DYNAMIC_LAYOUT_METRICS.panelPaddingY
+  const availablePanelWidth = safePanelWidth - DYNAMIC_LAYOUT_METRICS.panelPaddingX
+  const availablePanelHeight = safePanelHeight - DYNAMIC_LAYOUT_METRICS.panelPaddingY
   if (availablePanelWidth <= 0 || availablePanelHeight <= 0) return null
 
   const teamCandidates = (
-    isMobileLayout ? [{ rows: Math.max(1, teams), cols: 1 }] : getTeamGridCandidates(teams)
-  ).filter(({ rows, cols }) => rows * cols >= teams)
-  const playerCandidates = getPlayerGridCandidates(playersPerTeam).filter(
-    ({ rows, cols }) => rows * cols >= playersPerTeam
+    isMobileLayout ? [{ rows: Math.max(1, safeTeams), cols: 1 }] : getTeamGridCandidates(safeTeams)
+  ).filter(({ rows, cols }) => rows * cols >= safeTeams)
+  const playerCandidates = getPlayerGridCandidates(safePlayersPerTeam).filter(
+    ({ rows, cols }) => rows * cols >= safePlayersPerTeam
   )
   let best = null
 
@@ -184,6 +200,7 @@ export const computeDynamicLayout = ({
         const unusedRatio = (slackW + slackH) / Math.max(1, slotLoadoutWidth + slotLoadoutHeight)
         const score = itemSize - unusedRatio * 32
 
+        if (!Number.isFinite(score)) continue
         if (!best || score > best.score) {
           const slotRequiredWidth =
             usedLoadoutWidth + effectiveSlotPaddingX + DYNAMIC_LAYOUT_METRICS.slotBorder
@@ -208,7 +225,7 @@ export const computeDynamicLayout = ({
             effectiveTeamHeaderReserve +
             DYNAMIC_LAYOUT_METRICS.teamBorder +
             effectiveAssignOptionsReserve
-          best = {
+          const nextBest = {
             score,
             itemSize,
             teamGrid,
@@ -221,6 +238,18 @@ export const computeDynamicLayout = ({
             playerGridHeight,
             teamBlockWidth,
             teamBlockHeight
+          }
+          const hasInvalidDimension = [
+            nextBest.itemSize,
+            nextBest.slotRequiredWidth,
+            nextBest.slotRequiredHeight,
+            nextBest.playerGridWidth,
+            nextBest.playerGridHeight,
+            nextBest.teamBlockWidth,
+            nextBest.teamBlockHeight
+          ].some((val) => !Number.isFinite(val) || val <= 0)
+          if (!hasInvalidDimension) {
+            best = nextBest
           }
         }
       }
