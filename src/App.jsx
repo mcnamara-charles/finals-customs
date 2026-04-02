@@ -587,11 +587,9 @@ function App() {
   const useMobilePanelTabs = viewportWidth < LOADOUTS_MOBILE_PANEL_BREAKPOINT
   const showGameOptionsPanel = !useMobilePanelTabs || mobilePanelTab === 'game-options'
   const showParticipantsPanel = !useMobilePanelTabs || mobilePanelTab === 'participants'
-  /** Owners/admins use collapsed summary when sidebar is collapsed; members always see full panel. */
-  const sidebarShowsCollapsedChrome = isSidebarCollapsed && !isViewOnlyMode
-  /** Overlay spacer/backdrop and `is-overlay` class apply only for roles that use collapsible overlay sidebar. */
-  const sidebarOverlayChromeVisible =
-    !isViewOnlyMode && isSidebarOverlayMode && !isSidebarCollapsed
+  const sidebarShowsCollapsedChrome = isSidebarCollapsed
+  /** Overlay spacer/backdrop and `is-overlay` class apply whenever sidebar overlay mode is active. */
+  const sidebarOverlayChromeVisible = isSidebarOverlayMode && !isSidebarCollapsed
 
   const endTeamDnD = useCallback(() => {
     teamDnDRef.current = null
@@ -5440,30 +5438,29 @@ function App() {
               sidebarOverlayChromeVisible ? 'is-overlay' : ''
             }`}
           >
-            {!isViewOnlyMode &&
-              (isSidebarCollapsed ? (
+            {isSidebarCollapsed ? (
+              <button
+                className="sidebar-collapse-btn sidebar-collapse-btn-full"
+                onClick={() => setIsSidebarCollapsed(false)}
+                title="Expand sidebar"
+                aria-label="Expand sidebar"
+              >
+                <ChevronRightIcon />
+                <span>Open Panel</span>
+              </button>
+            ) : (
+              <div className="sidebar-panel-header">
+                <h2 className="sidebar-panel-title">Control Panel</h2>
                 <button
-                  className="sidebar-collapse-btn sidebar-collapse-btn-full"
-                  onClick={() => setIsSidebarCollapsed(false)}
-                  title="Expand sidebar"
-                  aria-label="Expand sidebar"
+                  className="sidebar-collapse-btn"
+                  onClick={() => setIsSidebarCollapsed(true)}
+                  title="Collapse sidebar"
+                  aria-label="Collapse sidebar"
                 >
-                  <ChevronRightIcon />
-                  <span>Open Panel</span>
+                  <ChevronLeftIcon />
                 </button>
-              ) : (
-                <div className="sidebar-panel-header">
-                  <h2 className="sidebar-panel-title">Control Panel</h2>
-                  <button
-                    className="sidebar-collapse-btn"
-                    onClick={() => setIsSidebarCollapsed(true)}
-                    title="Collapse sidebar"
-                    aria-label="Collapse sidebar"
-                  >
-                    <ChevronLeftIcon />
-                  </button>
-                </div>
-              ))}
+              </div>
+            )}
             {sidebarShowsCollapsedChrome ? (
               <div className="sidebar-collapsed-summary">
                 <div className="collapsed-summary-item">
