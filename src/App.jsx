@@ -49,6 +49,10 @@ import {
   deleteGroup,
   setGroupName,
   setGroupGradientColors,
+  setGroupBannerDisplay,
+  uploadGroupBannerImage,
+  normalizeGroupBannerMode,
+  isPlausibleGroupBannerImageUrl,
   normalizeGroupManualStatus
 } from './services/groupService'
 import {
@@ -91,6 +95,210 @@ const GROUP_SETTINGS_TAB_GROUP = 'group'
 const GROUP_SETTINGS_TAB_TEAM = 'team'
 const GROUP_SETTINGS_TAB_LOADOUTS = 'loadouts'
 const GROUP_SETTINGS_TAB_EVENTS = 'events'
+const LOADOUT_RANDOMIZATION_SCOPE_UNIQUE = 'unique'
+const LOADOUT_RANDOMIZATION_SCOPE_TEAM = 'team'
+const LOADOUT_RANDOMIZATION_SCOPE_ALL = 'all'
+const LOADOUT_RANDOMIZATION_SOURCE_ITEMS = 'items'
+const LOADOUT_RANDOMIZATION_SOURCE_PRESETS = 'presets'
+
+function isValidLoadoutRandomizationScope(value) {
+  return (
+    value === LOADOUT_RANDOMIZATION_SCOPE_UNIQUE ||
+    value === LOADOUT_RANDOMIZATION_SCOPE_TEAM ||
+    value === LOADOUT_RANDOMIZATION_SCOPE_ALL
+  )
+}
+
+function isValidLoadoutRandomizationSource(value) {
+  return (
+    value === LOADOUT_RANDOMIZATION_SOURCE_ITEMS || value === LOADOUT_RANDOMIZATION_SOURCE_PRESETS
+  )
+}
+
+function newLoadoutPresetId() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 11)}`
+}
+
+function createEmptyLoadoutShape() {
+  return { class: null, specialization: null, weapon: null, gadgets: [null, null, null] }
+}
+
+/** @param {unknown} raw */
+function normalizeLoadoutPresets(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : newLoadoutPresetId()
+    const nameRaw = typeof entry.name === 'string' ? entry.name.trim() : ''
+    const lo = entry.loadout && typeof entry.loadout === 'object' ? entry.loadout : {}
+    const gadgets = Array.isArray(lo.gadgets) ? [...lo.gadgets] : [null, null, null]
+    while (gadgets.length < 3) gadgets.push(null)
+    out.push({
+      id,
+      name: nameRaw.slice(0, 96).toUpperCase() || 'PRESET',
+      loadout: {
+        class: lo.class ?? null,
+        specialization: lo.specialization ?? null,
+        weapon: lo.weapon ?? null,
+        gadgets: gadgets.slice(0, 3)
+      }
+    })
+  }
+  return out
+}
+
+function loadoutHasLockedNonClassItems(locks) {
+  return Boolean(
+    locks?.specialization ||
+      locks?.weapon ||
+      (locks?.gadgets && locks.gadgets.some((locked) => locked))
+  )
+}
+
+/** Same merge rules as template copy in `buildRandomizedLoadouts` (respect loadout locks). Mutates `currentLoadout`. */
+function applyTemplateLoadoutOntoParticipantMutable(currentLoadout, templateLoadout, locks) {
+  if (!templateLoadout || !currentLoadout) return
+  if (!locks.class && !loadoutHasLockedNonClassItems(locks)) {
+    currentLoadout.class = templateLoadout.class
+  }
+  if (!locks.specialization) currentLoadout.specialization = templateLoadout.specialization
+  if (!locks.weapon) currentLoadout.weapon = templateLoadout.weapon
+  const gLocks = locks.gadgets || [false, false, false]
+  const tg = templateLoadout.gadgets || [null, null, null]
+  if (!currentLoadout.gadgets) currentLoadout.gadgets = [null, null, null]
+  for (let i = 0; i < 3; i++) {
+    if (!gLocks[i]) currentLoadout.gadgets[i] = tg[i]
+  }
+}
+
+/** Post-merge validation and gadget fill (randomization pipeline parity). Mutates `loadoutsByParticipant[participant]`. */
+function fixupParticipantLoadoutConsistencyMutable(
+  participant,
+  loadoutsByParticipant,
+  lockedLoadoutsByParticipant,
+  gameConfig,
+  {
+    getWeightedRandomItem,
+    isSpecializationEnabledForRandomizer,
+    isWeaponEnabledForRandomizer,
+    isGadgetEnabledForRandomizer,
+    getSpecializationWeight,
+    getWeaponWeight,
+    getGadgetWeight
+  }
+) {
+  const locks = lockedLoadoutsByParticipant[participant] || {}
+  if (!loadoutsByParticipant[participant]) {
+    loadoutsByParticipant[participant] = {
+      class: null,
+      specialization: null,
+      weapon: null,
+      gadgets: [null, null, null]
+    }
+  }
+  const currentLoadout = loadoutsByParticipant[participant]
+  const selectedClass = currentLoadout.class
+  const classData = selectedClass ? gameConfig.classes[selectedClass] : null
+  if (!classData) {
+    if (!locks.specialization) currentLoadout.specialization = null
+    if (!locks.weapon) currentLoadout.weapon = null
+    if (!locks.gadgets) {
+      currentLoadout.gadgets = [null, null, null]
+    } else {
+      currentLoadout.gadgets = currentLoadout.gadgets.map((g, i) => (locks.gadgets[i] ? g : null))
+    }
+    return
+  }
+
+  if (!locks.specialization) {
+    const specName = currentLoadout.specialization?.name
+    const valid =
+      specName &&
+      (classData.specializations || []).some((s) => s.name === specName) &&
+      isSpecializationEnabledForRandomizer(participant, selectedClass, specName)
+    if (!valid) {
+      const specializations = (classData.specializations || []).filter((spec) =>
+        isSpecializationEnabledForRandomizer(participant, selectedClass, spec.name)
+      )
+      currentLoadout.specialization = getWeightedRandomItem(
+        specializations,
+        (spec) => getSpecializationWeight(participant, selectedClass, spec.name)
+      )
+    }
+  }
+
+  if (!locks.weapon) {
+    const weaponName = currentLoadout.weapon?.name
+    const valid =
+      weaponName &&
+      (classData.weapons || []).some((w) => w.name === weaponName) &&
+      isWeaponEnabledForRandomizer(participant, selectedClass, weaponName)
+    if (!valid) {
+      const weapons = (classData.weapons || []).filter((weapon) =>
+        isWeaponEnabledForRandomizer(participant, selectedClass, weapon.name)
+      )
+      currentLoadout.weapon = getWeightedRandomItem(
+        weapons,
+        (weapon) => getWeaponWeight(participant, selectedClass, weapon.name)
+      )
+    }
+  }
+
+  const gadgetLocks = locks.gadgets || [false, false, false]
+  const currentGadgets = currentLoadout.gadgets || [null, null, null]
+  const validGadgetSet = new Set((classData.gadgets || []).map((g) => g.name))
+  const cleared = currentGadgets.map((g, i) => {
+    if (gadgetLocks[i]) return g
+    if (
+      !g ||
+      !g.name ||
+      !validGadgetSet.has(g.name) ||
+      !isGadgetEnabledForRandomizer(participant, selectedClass, g.name)
+    ) {
+      return null
+    }
+    return g
+  })
+  const namesSoFar = new Set()
+  const deduped = cleared.map((g, i) => {
+    if (gadgetLocks[i]) {
+      if (g?.name) namesSoFar.add(g.name)
+      return g
+    }
+    if (!g) return null
+    if (namesSoFar.has(g.name)) return null
+    namesSoFar.add(g.name)
+    return g
+  })
+
+  const gadgetsSoFar = deduped.filter(Boolean)
+  const gadgetNamesSoFar = gadgetsSoFar.map((g) => g.name)
+  const availableGadgets = (classData.gadgets || [])
+    .filter((g) => !gadgetNamesSoFar.includes(g.name))
+    .filter((g) => isGadgetEnabledForRandomizer(participant, selectedClass, g.name))
+  const filledGadgets = [...deduped]
+  const remainingGadgets = [...availableGadgets]
+  for (let i = 0; i < 3; i++) {
+    if (!gadgetLocks[i] && !filledGadgets[i] && remainingGadgets.length > 0) {
+      const selectedGadget = getWeightedRandomItem(
+        remainingGadgets,
+        (gadget) => getGadgetWeight(participant, selectedClass, gadget.name)
+      )
+      if (selectedGadget) {
+        filledGadgets[i] = selectedGadget
+        const selectedIdx = remainingGadgets.findIndex((g) => g.name === selectedGadget.name)
+        if (selectedIdx >= 0) {
+          remainingGadgets.splice(selectedIdx, 1)
+        }
+      }
+    }
+  }
+  currentLoadout.gadgets = filledGadgets
+}
+
 const ACTIVE_GROUP_STORAGE_KEY = 'finals_customs.active_group_id'
 const MANUAL_STATUS_OVERRIDE_TTL_MS = 8000
 
@@ -315,6 +523,42 @@ function groupDashboardBannerStyle(group) {
   }
 }
 
+function GroupDashboardTileBanner({ group, imageSrcOverride, children }) {
+  const [imgBroken, setImgBroken] = useState(false)
+  const mode = normalizeGroupBannerMode(group?.banner_mode)
+  const fromGroup = String(group?.banner_image_url || '').trim()
+  const rawDisplay =
+    imageSrcOverride != null && String(imageSrcOverride).trim() !== ''
+      ? String(imageSrcOverride).trim()
+      : fromGroup
+  const urlLooksUsable =
+    !!rawDisplay &&
+    rawDisplay.length <= 2048 &&
+    (rawDisplay.startsWith('blob:') || /^https:\/\//i.test(rawDisplay))
+
+  useEffect(() => {
+    setImgBroken(false)
+  }, [group?.id, rawDisplay])
+
+  const gradientStyle = groupDashboardBannerStyle(group)
+  const showImage = mode === 'image' && urlLooksUsable && !imgBroken
+
+  return (
+    <div className="groups-dashboard-group-tile-banner" style={gradientStyle}>
+      {showImage ? (
+        <img
+          className="groups-dashboard-group-tile-banner-photo"
+          src={rawDisplay}
+          alt=""
+          decoding="async"
+          onError={() => setImgBroken(true)}
+        />
+      ) : null}
+      {children}
+    </div>
+  )
+}
+
 function memberChipColor(userId) {
   const hue = hashString32(userId) % 360
   return `hsl(${hue} var(--app-member-chip-s) var(--app-member-chip-l))`
@@ -405,6 +649,7 @@ function participantAvatarSrc(row, label) {
 
 /** @param {Array<{ user_id: string, username?: string | null, display_name?: string | null }>} memberRows */
 function canEditGroupManualStatus({ actorRole, actorUserId, targetUserId, targetMembershipRole }) {
+  if (actorRole == null) return false
   if (actorUserId === targetUserId) return true
   if (actorRole === 'owner') return true
   if (actorRole === 'admin' && targetMembershipRole === 'member') return true
@@ -416,12 +661,6 @@ function canRemoveGroupMemberFromGroup(actorRole, targetMembershipRole) {
   if (actorRole === 'owner' && targetMembershipRole !== 'owner') return true
   if (actorRole === 'admin' && targetMembershipRole === 'member') return true
   return false
-}
-
-function groupManualStatusLabel(status) {
-  if (status === 'assigned') return 'Assigned'
-  if (status === 'unavailable') return 'Unavailable'
-  return 'Available'
 }
 
 function loadoutHasAnyFilled(lo) {
@@ -506,6 +745,14 @@ function App() {
   const [groupGradientBusy, setGroupGradientBusy] = useState(false)
   const [groupGradientError, setGroupGradientError] = useState('')
   const [groupGradientStatus, setGroupGradientStatus] = useState('')
+  const [groupBannerModeDraft, setGroupBannerModeDraft] = useState('gradient')
+  const [groupBannerImageUrlDraft, setGroupBannerImageUrlDraft] = useState('')
+  const [groupBannerPendingFile, setGroupBannerPendingFile] = useState(null)
+  const [groupBannerLocalPreviewUrl, setGroupBannerLocalPreviewUrl] = useState('')
+  const [groupBannerDisplayBusy, setGroupBannerDisplayBusy] = useState(false)
+  const [groupBannerDisplayError, setGroupBannerDisplayError] = useState('')
+  const [groupBannerDisplayStatus, setGroupBannerDisplayStatus] = useState('')
+  const groupBannerFileInputRef = useRef(null)
   const [groupNameDraft, setGroupNameDraft] = useState('')
   const [groupNameBusy, setGroupNameBusy] = useState(false)
   const [groupNameError, setGroupNameError] = useState('')
@@ -518,7 +765,12 @@ function App() {
   const [keepSeparateB, setKeepSeparateB] = useState('')
   const [loadouts, setLoadouts] = useState({}) // { participantName: { class, specialization, weapon, gadgets: [] } }
   const [lockedLoadouts, setLockedLoadouts] = useState({}) // { participantName: { class: true/false, specialization: true/false, weapon: true/false, gadgets: [true/false] } }
-  const [loadoutSelector, setLoadoutSelector] = useState(null) // { participant, type, index } or null
+  const [loadoutRandomizationScope, setLoadoutRandomizationScope] = useState(LOADOUT_RANDOMIZATION_SCOPE_UNIQUE)
+  const [loadoutRandomizationSource, setLoadoutRandomizationSource] = useState(
+    LOADOUT_RANDOMIZATION_SOURCE_ITEMS
+  )
+  const [loadoutPresets, setLoadoutPresets] = useState(() => [])
+  const [loadoutSelector, setLoadoutSelector] = useState(null) // { participant?, presetId?, type, index } or null
   const [classInputs, setClassInputs] = useState({})
   const [classEnabled, setClassEnabled] = useState({})
   const [specializationInputs, setSpecializationInputs] = useState({})
@@ -559,6 +811,7 @@ function App() {
   const [viewportMenuLayoutTick, setViewportMenuLayoutTick] = useState(0)
   const [assignedSlotMenuMoveSubOpen, setAssignedSlotMenuMoveSubOpen] = useState(false)
   const [assignedSlotMenuSwapSubOpen, setAssignedSlotMenuSwapSubOpen] = useState(false)
+  const [assignedSlotMenuApplySubOpen, setAssignedSlotMenuApplySubOpen] = useState(false)
   const isInitialLoad = useRef(true)
   const skipNextPersistRef = useRef(false)
   const lastGroupPersistedRef = useRef('')
@@ -582,7 +835,9 @@ function App() {
   const [linkedParticipantPulseId, setLinkedParticipantPulseId] = useState(null)
   const linkedParticipantPulseTimeoutRef = useRef(null)
   const participantsListRef = useRef(null)
-  const isViewOnlyMode = groupRole === 'member'
+  const groupRoleUnset = groupRole == null
+  const isSelfGroupMember = groupRole === 'member'
+  const isViewOnlyMode = groupRoleUnset || isSelfGroupMember
   const isDashboardSidebarOverlayMode = viewportWidth < DASHBOARD_SIDEBAR_OVERLAY_BREAKPOINT
   const useMobilePanelTabs = viewportWidth < LOADOUTS_MOBILE_PANEL_BREAKPOINT
   const showGameOptionsPanel = !useMobilePanelTabs || mobilePanelTab === 'game-options'
@@ -698,6 +953,14 @@ function App() {
   )
   const canEditGroupGradient = groupRole === 'owner' || groupRole === 'admin'
   const canEditGroupName = groupRole === 'owner' || groupRole === 'admin'
+  const activeGroupBannerMode = useMemo(
+    () => normalizeGroupBannerMode(activeGroupRow?.banner_mode),
+    [activeGroupRow?.banner_mode]
+  )
+  const activeGroupBannerImageUrl = useMemo(
+    () => String(activeGroupRow?.banner_image_url || '').trim(),
+    [activeGroupRow?.banner_image_url]
+  )
   const hasGroupGradientChanges = useMemo(() => {
     const nextColorA = normalizeHexColor(groupGradientColorA)
     const nextColorB = normalizeHexColor(groupGradientColorB)
@@ -712,22 +975,40 @@ function App() {
     activeGroupGradientColorA,
     activeGroupGradientColorB
   ])
+  const hasGroupBannerDisplayChanges = useMemo(() => {
+    const modeChanged = groupBannerModeDraft !== activeGroupBannerMode
+    const urlDraft = String(groupBannerImageUrlDraft || '').trim()
+    const imageDirty =
+      groupBannerModeDraft === 'image' &&
+      (groupBannerPendingFile != null || urlDraft !== activeGroupBannerImageUrl)
+    return modeChanged || imageDirty
+  }, [
+    groupBannerModeDraft,
+    activeGroupBannerMode,
+    groupBannerImageUrlDraft,
+    activeGroupBannerImageUrl,
+    groupBannerPendingFile
+  ])
   const settingsHeaderGroupTitle = activeGroupName || 'Dashboard'
-  const groupGradientPreviewStyle = useMemo(() => {
-    const previewGroup = {
+  const groupBannerPreviewGroup = useMemo(
+    () => ({
       id: activeGroupRow?.id || activeGroupId || 'preview-group',
       gradient_color_a: normalizeHexColor(groupGradientColorA) || activeGroupGradientColorA,
-      gradient_color_b: normalizeHexColor(groupGradientColorB) || activeGroupGradientColorB
-    }
-    return groupDashboardBannerStyle(previewGroup)
-  }, [
-    activeGroupRow?.id,
-    activeGroupId,
-    groupGradientColorA,
-    groupGradientColorB,
-    activeGroupGradientColorA,
-    activeGroupGradientColorB
-  ])
+      gradient_color_b: normalizeHexColor(groupGradientColorB) || activeGroupGradientColorB,
+      banner_mode: groupBannerModeDraft,
+      banner_image_url: groupBannerImageUrlDraft
+    }),
+    [
+      activeGroupRow?.id,
+      activeGroupId,
+      groupGradientColorA,
+      groupGradientColorB,
+      activeGroupGradientColorA,
+      activeGroupGradientColorB,
+      groupBannerModeDraft,
+      groupBannerImageUrlDraft
+    ]
+  )
   const groupGradientPreviewProfiles = useMemo(() => {
     const row = activeGroupRow
     if (!row) return []
@@ -875,7 +1156,7 @@ function App() {
 
   const handleGroupManualStatusChange = useCallback(
     async (targetUserId, nextStatus) => {
-      if (!activeGroupId || !session?.user?.id) return
+      if (!activeGroupId || !session?.user?.id || groupRole == null) return
       const row = groupMemberRoster.find((r) => r.user_id === targetUserId)
       if (
         !canEditGroupManualStatus({
@@ -1040,6 +1321,7 @@ function App() {
     setAssignedSlotMenuPosition(null)
     setAssignedSlotMenuMoveSubOpen(false)
     setAssignedSlotMenuSwapSubOpen(false)
+    setAssignedSlotMenuApplySubOpen(false)
     setAssignedSlotSubmenuStyle({})
   }, [])
 
@@ -1105,7 +1387,10 @@ function App() {
       }
     })
 
-    const subOpen = assignedSlotMenuMoveSubOpen || assignedSlotMenuSwapSubOpen
+    const subOpen =
+      assignedSlotMenuMoveSubOpen ||
+      assignedSlotMenuSwapSubOpen ||
+      assignedSlotMenuApplySubOpen
     if (!subOpen) {
       setAssignedSlotSubmenuStyle({})
       return
@@ -1116,6 +1401,7 @@ function App() {
     assignedSlotMenuKey,
     assignedSlotMenuMoveSubOpen,
     assignedSlotMenuSwapSubOpen,
+    assignedSlotMenuApplySubOpen,
     viewportMenuLayoutTick
   ])
 
@@ -1199,6 +1485,17 @@ function App() {
     []
   )
 
+  const loadoutSelectorEffectiveLoadout = useMemo(() => {
+    if (!loadoutSelector) return undefined
+    if (loadoutSelector.presetId != null) {
+      return loadoutPresets.find((p) => p.id === loadoutSelector.presetId)?.loadout
+    }
+    if (loadoutSelector.participant != null) {
+      return loadouts[loadoutSelector.participant]
+    }
+    return undefined
+  }, [loadoutSelector, loadoutPresets, loadouts])
+
   const applyPersistedState = useCallback(
     (parsed) => {
       if (parsed.selectedGamemode !== undefined) setSelectedGamemode(parsed.selectedGamemode)
@@ -1223,6 +1520,27 @@ function App() {
       if (parsed.selectedWeather !== undefined) setSelectedWeather(parsed.selectedWeather)
       if (parsed.selectedLoadoutRandomTarget !== undefined)
         setSelectedLoadoutRandomTarget(parsed.selectedLoadoutRandomTarget)
+      if (
+        parsed.loadoutRandomizationScope !== undefined &&
+        isValidLoadoutRandomizationScope(parsed.loadoutRandomizationScope)
+      ) {
+        setLoadoutRandomizationScope(parsed.loadoutRandomizationScope)
+      } else {
+        setLoadoutRandomizationScope(LOADOUT_RANDOMIZATION_SCOPE_UNIQUE)
+      }
+      if (
+        parsed.loadoutRandomizationSource !== undefined &&
+        isValidLoadoutRandomizationSource(parsed.loadoutRandomizationSource)
+      ) {
+        setLoadoutRandomizationSource(parsed.loadoutRandomizationSource)
+      } else {
+        setLoadoutRandomizationSource(LOADOUT_RANDOMIZATION_SOURCE_ITEMS)
+      }
+      if (parsed.loadoutPresets !== undefined) {
+        setLoadoutPresets(normalizeLoadoutPresets(parsed.loadoutPresets))
+      } else {
+        setLoadoutPresets([])
+      }
       if (parsed.lockedGamemode !== undefined) setLockedGamemode(parsed.lockedGamemode)
       if (parsed.lockedMap !== undefined) setLockedMap(parsed.lockedMap)
       if (parsed.lockedWeather !== undefined) setLockedWeather(parsed.lockedWeather)
@@ -1504,6 +1822,9 @@ function App() {
       selectedMapId,
       selectedWeather,
       selectedLoadoutRandomTarget,
+      loadoutRandomizationScope,
+      loadoutRandomizationSource,
+      loadoutPresets,
       lockedGamemode,
       lockedMap,
       lockedWeather,
@@ -1574,6 +1895,9 @@ function App() {
     selectedMapId,
     selectedWeather,
     selectedLoadoutRandomTarget,
+    loadoutRandomizationScope,
+    loadoutRandomizationSource,
+    loadoutPresets,
     lockedGamemode,
     lockedMap,
     lockedWeather,
@@ -1976,6 +2300,19 @@ function App() {
     setGroupGradientStatus('')
   }, [activeGroupId, activeGroupGradientColorA, activeGroupGradientColorB])
 
+  useEffect(() => {
+    setGroupBannerModeDraft(activeGroupBannerMode)
+    setGroupBannerImageUrlDraft(activeGroupBannerImageUrl)
+    setGroupBannerPendingFile(null)
+    setGroupBannerLocalPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev)
+      return ''
+    })
+    setGroupBannerDisplayError('')
+    setGroupBannerDisplayStatus('')
+    if (groupBannerFileInputRef.current) groupBannerFileInputRef.current.value = ''
+  }, [activeGroupId, activeGroupBannerMode, activeGroupBannerImageUrl])
+
   const handleDashboardLeaveGroup = useCallback(
     async (group) => {
       if (!group?.id || !session?.user?.id || inviteActionBusy) return
@@ -2076,6 +2413,99 @@ function App() {
     groupGradientColorA,
     groupGradientColorB,
     refreshGroupsList
+  ])
+
+  const handleSaveGroupBannerDisplay = useCallback(async () => {
+    if (
+      !activeGroupId ||
+      groupBannerDisplayBusy ||
+      !canEditGroupGradient ||
+      !hasGroupBannerDisplayChanges
+    ) {
+      return
+    }
+
+    setGroupBannerDisplayBusy(true)
+    setGroupBannerDisplayError('')
+    setGroupBannerDisplayStatus('')
+    try {
+      if (groupBannerModeDraft === 'image') {
+        let imageUrl = ''
+        if (groupBannerPendingFile) {
+          imageUrl = await uploadGroupBannerImage(activeGroupId, groupBannerPendingFile)
+        } else {
+          imageUrl = String(groupBannerImageUrlDraft || '').trim()
+          if (!isPlausibleGroupBannerImageUrl(imageUrl)) {
+            setGroupBannerDisplayError('Choose an image file to upload.')
+            return
+          }
+        }
+        await setGroupBannerDisplay(activeGroupId, 'image', imageUrl)
+        setGroupBannerImageUrlDraft(imageUrl)
+        setMyGroups((prev) =>
+          prev.map((g) =>
+            g.id === activeGroupId ? { ...g, banner_mode: 'image', banner_image_url: imageUrl } : g
+          )
+        )
+      } else {
+        await setGroupBannerDisplay(activeGroupId, 'gradient', null)
+        setMyGroups((prev) =>
+          prev.map((g) =>
+            g.id === activeGroupId ? { ...g, banner_mode: 'gradient', banner_image_url: null } : g
+          )
+        )
+      }
+
+      setGroupBannerPendingFile(null)
+      setGroupBannerLocalPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev)
+        return ''
+      })
+      if (groupBannerFileInputRef.current) groupBannerFileInputRef.current.value = ''
+
+      await refreshGroupsList()
+      setGroupBannerDisplayStatus('Banner updated.')
+    } catch (err) {
+      console.error('[Group] Failed to save banner display:', err)
+      setGroupBannerDisplayError(err.message || 'Could not save banner.')
+    } finally {
+      setGroupBannerDisplayBusy(false)
+    }
+  }, [
+    activeGroupId,
+    groupBannerDisplayBusy,
+    canEditGroupGradient,
+    hasGroupBannerDisplayChanges,
+    groupBannerModeDraft,
+    groupBannerPendingFile,
+    groupBannerImageUrlDraft,
+    refreshGroupsList
+  ])
+
+  const handleSaveGroupGradientSection = useCallback(async () => {
+    if (
+      !canEditGroupGradient ||
+      groupBannerDisplayBusy ||
+      groupGradientBusy ||
+      activeGroupId == null
+    ) {
+      return
+    }
+    if (hasGroupBannerDisplayChanges) {
+      await handleSaveGroupBannerDisplay()
+    }
+    if (hasGroupGradientChanges) {
+      await handleSaveGroupGradient()
+    }
+  }, [
+    canEditGroupGradient,
+    groupBannerDisplayBusy,
+    groupGradientBusy,
+    activeGroupId,
+    hasGroupBannerDisplayChanges,
+    hasGroupGradientChanges,
+    handleSaveGroupBannerDisplay,
+    handleSaveGroupGradient
   ])
 
   const handleSaveGroupName = useCallback(async () => {
@@ -3037,20 +3467,61 @@ function App() {
 
   const handleLoadoutSelect = (item) => {
     if (!loadoutSelector) return
-    
-    const { participant, type, index } = loadoutSelector
-    const updatedLoadouts = { ...loadouts }
-    
-    if (!updatedLoadouts[participant]) {
-      updatedLoadouts[participant] = { class: null, specialization: null, weapon: null, gadgets: [null, null, null] }
+
+    const { participant, presetId, type, index } = loadoutSelector
+
+    if (presetId) {
+      setLoadoutPresets((prev) => {
+        const list = normalizeLoadoutPresets(prev)
+        const idx = list.findIndex((p) => p.id === presetId)
+        if (idx < 0) return list
+        const next = [...list]
+        const row = { ...next[idx], loadout: { ...createEmptyLoadoutShape(), ...next[idx].loadout } }
+        const cur = row.loadout
+
+        if (type === 'class') {
+          const oldClass = cur.class
+          cur.class = item
+          if (oldClass !== item) {
+            cur.specialization = null
+            cur.weapon = null
+            cur.gadgets = [null, null, null]
+          }
+        } else if (type === 'specialization') {
+          cur.specialization = item
+        } else if (type === 'weapon') {
+          cur.weapon = item
+        } else if (type === 'gadget' && index !== null) {
+          if (!cur.gadgets) cur.gadgets = [null, null, null]
+          cur.gadgets = [...cur.gadgets]
+          cur.gadgets[index] = item
+        }
+        next[idx] = row
+        return next
+      })
+      setLoadoutSelector(null)
+      return
     }
-    
+
+    if (!participant) return
+
+    const updatedLoadouts = { ...loadouts }
+
+    if (!updatedLoadouts[participant]) {
+      updatedLoadouts[participant] = {
+        class: null,
+        specialization: null,
+        weapon: null,
+        gadgets: [null, null, null]
+      }
+    }
+
     const locks = lockedLoadouts[participant] || {}
-    
+
     if (type === 'class') {
       const oldClass = updatedLoadouts[participant].class
       updatedLoadouts[participant].class = item
-      
+
       // Only clear specialization, weapon, and gadgets if class actually changed (unless locked)
       if (oldClass !== item) {
         if (!locks.specialization) {
@@ -3063,9 +3534,9 @@ function App() {
         if (!locks.gadgets) {
           updatedLoadouts[participant].gadgets = [null, null, null]
         } else {
-          updatedLoadouts[participant].gadgets = (updatedLoadouts[participant].gadgets || [null, null, null]).map((g, i) => 
-            locks.gadgets[i] ? g : null
-          )
+          updatedLoadouts[participant].gadgets = (
+            updatedLoadouts[participant].gadgets || [null, null, null]
+          ).map((g, i) => (locks.gadgets[i] ? g : null))
         }
       }
     } else if (type === 'specialization') {
@@ -3078,119 +3549,217 @@ function App() {
       }
       updatedLoadouts[participant].gadgets[index] = item
     }
-    
+
     setLoadouts(updatedLoadouts)
     setLoadoutSelector(null)
+  }
+
+  const mutateRandomizedLoadoutForParticipant = (newLoadouts, participant) => {
+    const classNames = Object.keys(gameConfig.classes) // ['light', 'medium', 'heavy']
+
+    if (!newLoadouts[participant]) {
+      newLoadouts[participant] = { class: null, specialization: null, weapon: null, gadgets: [null, null, null] }
+    }
+
+    const locks = lockedLoadouts[participant] || {}
+    const currentLoadout = newLoadouts[participant]
+
+    if (!locks.class && !loadoutHasLockedNonClassItems(locks)) {
+      const availableClasses = classNames.filter((className) => isClassEnabledForRandomizer(participant, className))
+      currentLoadout.class = getWeightedRandomItem(
+        availableClasses,
+        (className) => getClassWeight(participant, className)
+      )
+      if (!locks.specialization) currentLoadout.specialization = null
+      if (!locks.weapon) currentLoadout.weapon = null
+      if (!locks.gadgets) {
+        currentLoadout.gadgets = [null, null, null]
+      } else {
+        currentLoadout.gadgets = currentLoadout.gadgets.map((g, i) => (locks.gadgets[i] ? g : null))
+      }
+    }
+
+    const selectedClass = currentLoadout.class
+    const classData = selectedClass ? gameConfig.classes[selectedClass] : null
+    if (!classData) {
+      if (!locks.specialization) currentLoadout.specialization = null
+      if (!locks.weapon) currentLoadout.weapon = null
+      if (!locks.gadgets) currentLoadout.gadgets = [null, null, null]
+      return
+    }
+
+    if (!locks.specialization) {
+      const specializations = (classData.specializations || []).filter((spec) =>
+        isSpecializationEnabledForRandomizer(participant, selectedClass, spec.name)
+      )
+      currentLoadout.specialization = getWeightedRandomItem(
+        specializations,
+        (spec) => getSpecializationWeight(participant, selectedClass, spec.name)
+      )
+    }
+
+    if (!locks.weapon) {
+      const weapons = (classData.weapons || []).filter((weapon) =>
+        isWeaponEnabledForRandomizer(participant, selectedClass, weapon.name)
+      )
+      currentLoadout.weapon = getWeightedRandomItem(
+        weapons,
+        (weapon) => getWeaponWeight(participant, selectedClass, weapon.name)
+      )
+    }
+
+    const currentGadgets = currentLoadout.gadgets || [null, null, null]
+    const gadgetLocks = locks.gadgets || [false, false, false]
+    const lockedGadgets = currentGadgets.map((g, i) => (gadgetLocks[i] ? g : null))
+    const lockedGadgetNames = lockedGadgets.filter(Boolean).map((g) => g.name)
+    const availableGadgets = (classData.gadgets || [])
+      .filter((g) => !lockedGadgetNames.includes(g.name))
+      .filter((g) => isGadgetEnabledForRandomizer(participant, selectedClass, g.name))
+    const newGadgets = [...lockedGadgets]
+    const remainingGadgets = [...availableGadgets]
+
+    for (let i = 0; i < 3; i++) {
+      if (!gadgetLocks[i] && remainingGadgets.length > 0) {
+        const selectedGadget = getWeightedRandomItem(
+          remainingGadgets,
+          (gadget) => getGadgetWeight(participant, selectedClass, gadget.name)
+        )
+        if (selectedGadget) {
+          newGadgets[i] = selectedGadget
+          const selectedIdx = remainingGadgets.findIndex((g) => g.name === selectedGadget.name)
+          if (selectedIdx >= 0) {
+            remainingGadgets.splice(selectedIdx, 1)
+          }
+        }
+      }
+    }
+
+    currentLoadout.gadgets = newGadgets
   }
 
   const buildRandomizedLoadouts = (assignmentsSource, positionLocks) => {
     const allAssignedPlayers = Object.values(assignmentsSource).flat()
     if (allAssignedPlayers.length === 0 && participants.length === 0) return null
 
-    const classNames = Object.keys(gameConfig.classes) // ['light', 'medium', 'heavy']
     const newLoadouts = { ...loadouts }
-
     const allPlayers = [...new Set([...allAssignedPlayers, ...participants])]
+    const scope = loadoutRandomizationScope
 
-    allPlayers.forEach(participant => {
-      if (positionLocks[participant] !== undefined) {
-        return
-      }
+    const normalizedPresets = normalizeLoadoutPresets(loadoutPresets)
+    const filledPresets = normalizedPresets.filter((p) => loadoutHasAnyFilled(p.loadout))
+    const usePresetRandomization =
+      loadoutRandomizationSource === LOADOUT_RANDOMIZATION_SOURCE_PRESETS && filledPresets.length > 0
 
+    const pickRandomPresetFromPool = () =>
+      filledPresets[Math.floor(Math.random() * filledPresets.length)]
+
+    const loadoutFixupRandomizerApi = {
+      getWeightedRandomItem,
+      isSpecializationEnabledForRandomizer,
+      isWeaponEnabledForRandomizer,
+      isGadgetEnabledForRandomizer,
+      getSpecializationWeight,
+      getWeaponWeight,
+      getGadgetWeight
+    }
+
+    const applyTemplateLoadoutOntoParticipant = (participant, templateLoadout) => {
+      if (!templateLoadout) return
       if (!newLoadouts[participant]) {
-        newLoadouts[participant] = { class: null, specialization: null, weapon: null, gadgets: [null, null, null] }
+        newLoadouts[participant] = {
+          class: null,
+          specialization: null,
+          weapon: null,
+          gadgets: [null, null, null]
+        }
       }
-      
+      const cur = newLoadouts[participant]
       const locks = lockedLoadouts[participant] || {}
-      const currentLoadout = newLoadouts[participant]
-      
-      // Check if any loadout item (except class) is locked
-      const hasLockedItems = locks.specialization || locks.weapon || (locks.gadgets && locks.gadgets.some(locked => locked))
-      
-      // Randomly select a class (if not locked and no other items are locked)
-      if (!locks.class && !hasLockedItems) {
-        const availableClasses = classNames
-          .filter(className => isClassEnabledForRandomizer(participant, className))
-        currentLoadout.class = getWeightedRandomItem(
-          availableClasses,
-          (className) => getClassWeight(participant, className)
-        )
-        // Clear specialization, weapon, and gadgets if class changed (unless locked)
-        if (!locks.specialization) currentLoadout.specialization = null
-        if (!locks.weapon) currentLoadout.weapon = null
-        if (!locks.gadgets) {
-          currentLoadout.gadgets = [null, null, null]
+      applyTemplateLoadoutOntoParticipantMutable(cur, templateLoadout, locks)
+    }
+
+    const mergeLoadoutTemplateOntoParticipant = (participant, templateParticipantId) => {
+      const tmpl = newLoadouts[templateParticipantId]
+      if (!tmpl) return
+      applyTemplateLoadoutOntoParticipant(participant, tmpl)
+    }
+
+    const fixupParticipantLoadoutConsistency = (participant) => {
+      fixupParticipantLoadoutConsistencyMutable(
+        participant,
+        newLoadouts,
+        lockedLoadouts,
+        gameConfig,
+        loadoutFixupRandomizerApi
+      )
+    }
+
+    const randomizeRepresentativeLoadout = (rep) => {
+      if (usePresetRandomization) {
+        const preset = pickRandomPresetFromPool()
+        applyTemplateLoadoutOntoParticipant(rep, preset.loadout)
+        fixupParticipantLoadoutConsistency(rep)
+      } else {
+        mutateRandomizedLoadoutForParticipant(newLoadouts, rep)
+      }
+    }
+
+    if (scope === LOADOUT_RANDOMIZATION_SCOPE_UNIQUE) {
+      allPlayers.forEach((participant) => {
+        if (positionLocks[participant] !== undefined) return
+        if (usePresetRandomization) {
+          const preset = pickRandomPresetFromPool()
+          applyTemplateLoadoutOntoParticipant(participant, preset.loadout)
+          fixupParticipantLoadoutConsistency(participant)
         } else {
-          // Only clear unlocked gadgets
-          currentLoadout.gadgets = currentLoadout.gadgets.map((g, i) => locks.gadgets[i] ? g : null)
+          mutateRandomizedLoadoutForParticipant(newLoadouts, participant)
         }
-      }
-      
-      const selectedClass = currentLoadout.class
-      const classData = selectedClass ? gameConfig.classes[selectedClass] : null
-      if (!classData) {
-        if (!locks.specialization) currentLoadout.specialization = null
-        if (!locks.weapon) currentLoadout.weapon = null
-        if (!locks.gadgets) currentLoadout.gadgets = [null, null, null]
-        return
-      }
+      })
+      return newLoadouts
+    }
 
-      // Randomly select a specialization (if not locked)
-      if (!locks.specialization) {
-        const specializations = (classData.specializations || [])
-          .filter(spec => isSpecializationEnabledForRandomizer(participant, selectedClass, spec.name))
-        currentLoadout.specialization = getWeightedRandomItem(
-          specializations,
-          (spec) => getSpecializationWeight(participant, selectedClass, spec.name)
-        )
+    if (scope === LOADOUT_RANDOMIZATION_SCOPE_ALL) {
+      const eligible = allPlayers
+        .filter((p) => positionLocks[p] === undefined)
+        .sort((a, b) => String(a).localeCompare(String(b)))
+      if (eligible.length === 0) return newLoadouts
+      const rep = eligible[0]
+      randomizeRepresentativeLoadout(rep)
+      for (let i = 1; i < eligible.length; i++) {
+        mergeLoadoutTemplateOntoParticipant(eligible[i], rep)
+        fixupParticipantLoadoutConsistency(eligible[i])
       }
+      return newLoadouts
+    }
 
-      // Randomly select a weapon (if not locked)
-      if (!locks.weapon) {
-        const weapons = (classData.weapons || [])
-          .filter(weapon => isWeaponEnabledForRandomizer(participant, selectedClass, weapon.name))
-        currentLoadout.weapon = getWeightedRandomItem(
-          weapons,
-          (weapon) => getWeaponWeight(participant, selectedClass, weapon.name)
-        )
+    // team scope
+    const assignedOnTeams = new Set()
+    const teamKeys = Object.keys(assignmentsSource).sort((a, b) => Number(a) - Number(b))
+    for (const ti of teamKeys) {
+      const members = (assignmentsSource[ti] || []).filter(Boolean)
+      members.forEach((m) => assignedOnTeams.add(m))
+      const eligible = members
+        .filter((p) => positionLocks[p] === undefined)
+        .sort((a, b) => String(a).localeCompare(String(b)))
+      if (eligible.length === 0) continue
+      const rep = eligible[0]
+      randomizeRepresentativeLoadout(rep)
+      for (let i = 1; i < eligible.length; i++) {
+        mergeLoadoutTemplateOntoParticipant(eligible[i], rep)
+        fixupParticipantLoadoutConsistency(eligible[i])
       }
-
-      // Randomly select 3 different gadgets (respecting locks)
-      const currentGadgets = currentLoadout.gadgets || [null, null, null]
-      const gadgetLocks = locks.gadgets || [false, false, false]
-      
-      // Get locked gadgets
-      const lockedGadgets = currentGadgets.map((g, i) => gadgetLocks[i] ? g : null)
-      
-      // Get available gadgets (excluding already selected locked ones and excluded items)
-      const lockedGadgetNames = lockedGadgets.filter(Boolean).map(g => g.name)
-      const availableGadgets = (classData.gadgets || [])
-        .filter(g => !lockedGadgetNames.includes(g.name))
-        .filter(g => isGadgetEnabledForRandomizer(participant, selectedClass, g.name))
-      
-      // Fill unlocked slots with random gadgets
-      const newGadgets = [...lockedGadgets]
-      const remainingGadgets = [...availableGadgets]
-      
-      for (let i = 0; i < 3; i++) {
-        if (!gadgetLocks[i] && remainingGadgets.length > 0) {
-          const selectedGadget = getWeightedRandomItem(
-            remainingGadgets,
-            (gadget) => getGadgetWeight(participant, selectedClass, gadget.name)
-          )
-          if (selectedGadget) {
-            newGadgets[i] = selectedGadget
-            const selectedIdx = remainingGadgets.findIndex(g => g.name === selectedGadget.name)
-            if (selectedIdx >= 0) {
-              remainingGadgets.splice(selectedIdx, 1)
-            }
-          }
-        }
+    }
+    for (const p of allPlayers) {
+      if (assignedOnTeams.has(p)) continue
+      if (positionLocks[p] !== undefined) continue
+      if (usePresetRandomization) {
+        const preset = pickRandomPresetFromPool()
+        applyTemplateLoadoutOntoParticipant(p, preset.loadout)
+        fixupParticipantLoadoutConsistency(p)
+      } else {
+        mutateRandomizedLoadoutForParticipant(newLoadouts, p)
       }
-      
-      currentLoadout.gadgets = newGadgets
-    })
-
+    }
     return newLoadouts
   }
 
@@ -3213,11 +3782,8 @@ function App() {
     const locks = lockedLoadouts[participant] || {}
     const currentLoadout = newLoadouts[participant]
     
-    // Check if any loadout item (except class) is locked
-    const hasLockedItems = locks.specialization || locks.weapon || (locks.gadgets && locks.gadgets.some(locked => locked))
-    
     // Randomly select a class (if not locked and no other items are locked)
-    if (!locks.class && !hasLockedItems) {
+    if (!locks.class && !loadoutHasLockedNonClassItems(locks)) {
       const availableClasses = classNames
         .filter(className => isClassEnabledForRandomizer(participant, className))
       currentLoadout.class = getWeightedRandomItem(
@@ -3614,6 +4180,58 @@ function App() {
     !isGadgetForcedDisabledForMode(className, gadgetName) &&
     isEnabledInRandomizer(getEnabledValueForParticipant(participant, 'gadgetEnabled', `${className}-${gadgetName}`))
 
+  const loadoutFixupRandomizerApiForApply = {
+    getWeightedRandomItem,
+    isSpecializationEnabledForRandomizer,
+    isWeaponEnabledForRandomizer,
+    isGadgetEnabledForRandomizer,
+    getSpecializationWeight,
+    getWeaponWeight,
+    getGadgetWeight
+  }
+
+  const handleApplySourceLoadoutToTargets = (sourceParticipant, targetIds) => {
+    if (!sourceParticipant || isViewOnlyMode) return
+    if (!targetIds || targetIds.length === 0) return
+
+    const cloneRow = (v) => {
+      if (v === undefined || v === null) return null
+      return typeof structuredClone === 'function' ? structuredClone(v) : JSON.parse(JSON.stringify(v))
+    }
+
+    setLoadouts((prev) => {
+      const templateRaw = prev[sourceParticipant]
+      if (!loadoutHasAnyFilled(templateRaw)) return prev
+      const templateLoadout =
+        templateRaw != null ? cloneRow(templateRaw) : createEmptyLoadoutShape()
+
+      const next = { ...prev }
+      let changed = false
+      for (const tid of targetIds) {
+        if (!tid || tid === sourceParticipant) continue
+        if (lockedParticipants[tid] !== undefined) continue
+
+        const existing = next[tid]
+        next[tid] = existing != null ? cloneRow(existing) : { ...createEmptyLoadoutShape() }
+
+        applyTemplateLoadoutOntoParticipantMutable(
+          next[tid],
+          templateLoadout,
+          lockedLoadouts[tid] || {}
+        )
+        fixupParticipantLoadoutConsistencyMutable(
+          tid,
+          next,
+          lockedLoadouts,
+          gameConfig,
+          loadoutFixupRandomizerApiForApply
+        )
+        changed = true
+      }
+      return changed ? next : prev
+    })
+  }
+
   const formatPercent = (value) => {
     if (!Number.isFinite(value)) return '0%'
     const rounded = Math.round(value * 10) / 10
@@ -3701,6 +4319,7 @@ function App() {
   }
 
   const handleRandomizeSingleLoadoutItem = (participant, type, index = null) => {
+    if (isViewOnlyMode) return
     if (!participant || lockedParticipants[participant] !== undefined) return
 
     const classNames = Object.keys(gameConfig.classes)
@@ -3795,6 +4414,98 @@ function App() {
       currentLoadout.gadgets[index] = randomGadget
       setLoadouts(newLoadouts)
     }
+  }
+
+  const handleRandomizePresetLoadoutItem = (presetId, type, index = null) => {
+    if (isViewOnlyMode) return
+    if (!presetId) return
+    const weightParticipant = SETTINGS_ALL_PLAYERS
+    const classNames = Object.keys(gameConfig.classes)
+
+    setLoadoutPresets((prev) => {
+      const list = normalizeLoadoutPresets(prev)
+      const idx = list.findIndex((p) => p.id === presetId)
+      if (idx < 0) return list
+      const next = [...list]
+      const row = { ...next[idx], loadout: { ...createEmptyLoadoutShape(), ...next[idx].loadout } }
+      const currentLoadout = row.loadout
+
+      if (type === 'class') {
+        const availableClasses = classNames.filter((className) =>
+          isClassEnabledForRandomizer(weightParticipant, className)
+        )
+        const randomClass = getWeightedRandomItem(
+          availableClasses,
+          (className) => getClassWeight(weightParticipant, className)
+        )
+        if (!randomClass) return list
+        const classChanged = currentLoadout.class !== randomClass
+        currentLoadout.class = randomClass
+        if (classChanged) {
+          currentLoadout.specialization = null
+          currentLoadout.weapon = null
+          currentLoadout.gadgets = [null, null, null]
+        }
+        next[idx] = row
+        return next
+      }
+
+      const selectedClass = currentLoadout.class
+      const classData = selectedClass ? gameConfig.classes[selectedClass] : null
+      if (!classData) return list
+
+      if (type === 'specialization') {
+        const specializations = (classData.specializations || []).filter((spec) =>
+          isSpecializationEnabledForRandomizer(weightParticipant, selectedClass, spec.name)
+        )
+        const randomSpec = getWeightedRandomItem(
+          specializations,
+          (spec) => getSpecializationWeight(weightParticipant, selectedClass, spec.name)
+        )
+        if (!randomSpec) return list
+        currentLoadout.specialization = randomSpec
+        next[idx] = row
+        return next
+      }
+
+      if (type === 'weapon') {
+        const weapons = (classData.weapons || []).filter((weapon) =>
+          isWeaponEnabledForRandomizer(weightParticipant, selectedClass, weapon.name)
+        )
+        const randomWeapon = getWeightedRandomItem(
+          weapons,
+          (weapon) => getWeaponWeight(weightParticipant, selectedClass, weapon.name)
+        )
+        if (!randomWeapon) return list
+        currentLoadout.weapon = randomWeapon
+        next[idx] = row
+        return next
+      }
+
+      if (type === 'gadget' && index !== null) {
+        const currentGadgets = currentLoadout.gadgets || [null, null, null]
+        const blockedNames = currentGadgets
+          .map((g, i) => (i === index ? null : g?.name))
+          .filter(Boolean)
+        const availableGadgets = (classData.gadgets || [])
+          .filter((gadget) => !blockedNames.includes(gadget.name))
+          .filter((gadget) =>
+            isGadgetEnabledForRandomizer(weightParticipant, selectedClass, gadget.name)
+          )
+        const randomGadget = getWeightedRandomItem(
+          availableGadgets,
+          (gadget) => getGadgetWeight(weightParticipant, selectedClass, gadget.name)
+        )
+        if (!randomGadget) return list
+        if (!currentLoadout.gadgets) currentLoadout.gadgets = [null, null, null]
+        currentLoadout.gadgets = [...currentLoadout.gadgets]
+        currentLoadout.gadgets[index] = randomGadget
+        next[idx] = row
+        return next
+      }
+
+      return list
+    })
   }
 
   // Update randomize all to include map/weather
@@ -4463,10 +5174,7 @@ function App() {
                         }
                       }}
                     >
-                      <div
-                        className="groups-dashboard-group-tile-banner"
-                        style={groupDashboardBannerStyle(g)}
-                      >
+                      <GroupDashboardTileBanner group={g}>
                         <div
                           className="groups-dashboard-group-menu-wrap"
                           data-dashboard-group-menu-wrap={g.id}
@@ -4551,7 +5259,7 @@ function App() {
                             </div>
                           ) : null}
                         </div>
-                      </div>
+                      </GroupDashboardTileBanner>
                       <div className="groups-dashboard-group-tile-body">
                         {(previewCount > 0 || overflow > 0) && (
                           <div className="groups-dashboard-member-chips" aria-hidden={true}>
@@ -4653,10 +5361,6 @@ function App() {
     )
   }
 
-  if (!groupRole) {
-    return <FullPageLoading label="Loading group" />
-  }
-
   const groupSettingsTabs = [
     { key: GROUP_SETTINGS_TAB_TEAM, label: 'Team' },
     { key: GROUP_SETTINGS_TAB_GROUP, label: 'Group' },
@@ -4665,8 +5369,6 @@ function App() {
     { key: GROUP_SETTINGS_TAB_EVENTS, label: 'Events' }
   ]
   const groupSettingsComingSoonByTab = {
-    [GROUP_SETTINGS_TAB_GROUP]: 'Group',
-    [GROUP_SETTINGS_TAB_LOADOUTS]: 'Loadouts',
     [GROUP_SETTINGS_TAB_EVENTS]: 'Events'
   }
   const renderGroupSettingsComingSoon = (label) => (
@@ -4685,8 +5387,335 @@ function App() {
     if (groupSettingsActiveTab === GROUP_SETTINGS_TAB_TEAM) {
       return renderTeamSettingsContent()
     }
+    if (groupSettingsActiveTab === GROUP_SETTINGS_TAB_LOADOUTS) {
+      return renderLoadoutsSettingsContent()
+    }
     return renderGroupSettingsComingSoon(
       groupSettingsComingSoonByTab[groupSettingsActiveTab] || 'Group'
+    )
+  }
+
+  const renderLoadoutsSettingsContent = () => {
+    const presetList = normalizeLoadoutPresets(loadoutPresets)
+    const filledPresetCount = presetList.filter((p) => loadoutHasAnyFilled(p.loadout)).length
+
+    const renderPresetRow = (presetRow) => {
+      const lo = presetRow.loadout || createEmptyLoadoutShape()
+      const pid = presetRow.id
+      const openSelector = (type, index = null) => {
+        if (isViewOnlyMode) return
+        setLoadoutSelector(
+          index != null ? { presetId: pid, type, index } : { presetId: pid, type }
+        )
+      }
+
+      return (
+        <div key={pid} className="loadout-preset-settings-row">
+          <div className="player-name-row">
+            <span className="player-name">
+              {isViewOnlyMode ? (
+                <span className="player-name-text">{presetRow.name}</span>
+              ) : (
+                <input
+                  type="text"
+                  className="loadout-preset-name-input"
+                  value={presetRow.name}
+                  onChange={(e) => {
+                    const v = e.target.value.slice(0, 96).toUpperCase()
+                    setLoadoutPresets((prev) =>
+                      prev.map((row) => (row.id === pid ? { ...row, name: v } : row))
+                    )
+                  }}
+                  aria-label="Preset name"
+                />
+              )}
+            </span>
+            {!isViewOnlyMode ? (
+              <div className="player-name-row__actions">
+                <button
+                  type="button"
+                  className="modal-close-btn loadout-preset-remove-btn"
+                  aria-label={`Remove preset ${presetRow.name}`}
+                  onClick={() => setLoadoutPresets((prev) => prev.filter((row) => row.id !== pid))}
+                >
+                  <FontAwesomeIcon icon={faXmark} className={`${FA_ICON_CLASS} modal-close-icon`} aria-hidden />
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <div
+            className={`loadout-display loadout-display--preset-settings${
+              isViewOnlyMode ? ' loadout-display--view-only' : ''
+            }`}
+          >
+            <div className="loadout-item-wrapper">
+              <div
+                className={`loadout-item class-item ${!lo.class ? 'empty' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (isViewOnlyMode) return
+                  openSelector('class')
+                }}
+              >
+                {lo.class ? (
+                  <>
+                    <img
+                      src={gameConfig.class_images[lo.class]}
+                      alt={lo.class}
+                      className="class-image"
+                    />
+                    {!isViewOnlyMode ? (
+                      <button
+                        type="button"
+                        className="loadout-randomize-btn-inside class-randomize"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleRandomizePresetLoadoutItem(pid, 'class')
+                        }}
+                        title="Randomize class"
+                      >
+                        <SmallDiceIcon />
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <span className="loadout-item-text">Class</span>
+                )}
+              </div>
+              <div className={`loadout-item-label ${getLoadoutLabelClass(lo.class || 'Class')}`}>
+                <em>{lo.class || 'Class'}</em>
+              </div>
+            </div>
+
+            <div className="loadout-item-wrapper">
+              <div
+                className={`loadout-item spec-item ${!lo.specialization ? 'empty' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (isViewOnlyMode) return
+                  openSelector('specialization')
+                }}
+              >
+                {lo.specialization ? (
+                  <>
+                    {lo.specialization.imageFile ? (
+                      <img
+                        src={lo.specialization.imageFile}
+                        alt={lo.specialization.name}
+                        className="spec-image"
+                        onError={(e) => {
+                          e.target.style.display = 'none'
+                        }}
+                      />
+                    ) : (
+                      <span className="loadout-item-text">{lo.specialization.name}</span>
+                    )}
+                    {!isViewOnlyMode ? (
+                      <button
+                        type="button"
+                        className="loadout-randomize-btn-inside spec-randomize"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleRandomizePresetLoadoutItem(pid, 'specialization')
+                        }}
+                        title="Randomize specialization"
+                      >
+                        <SmallDiceIcon />
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <span className="loadout-item-text">Spec</span>
+                )}
+              </div>
+              <div
+                className={`loadout-item-label ${getLoadoutLabelClass(lo.specialization?.name || 'Spec')}`}
+              >
+                <em>{lo.specialization?.name || 'Spec'}</em>
+              </div>
+            </div>
+
+            <div className="loadout-item-wrapper">
+              <div
+                className={`loadout-item weapon-item ${!lo.weapon ? 'empty' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (isViewOnlyMode) return
+                  openSelector('weapon')
+                }}
+              >
+                {lo.weapon ? (
+                  <>
+                    {lo.weapon.imageFile ? (
+                      <img
+                        src={lo.weapon.imageFile}
+                        alt={lo.weapon.name}
+                        className="weapon-image"
+                        onError={(e) => {
+                          e.target.style.display = 'none'
+                        }}
+                      />
+                    ) : (
+                      <span className="loadout-item-text">{lo.weapon.name}</span>
+                    )}
+                    {!isViewOnlyMode ? (
+                      <button
+                        type="button"
+                        className="loadout-randomize-btn-inside weapon-randomize"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleRandomizePresetLoadoutItem(pid, 'weapon')
+                        }}
+                        title="Randomize weapon"
+                      >
+                        <SmallDiceIcon />
+                      </button>
+                    ) : null}
+                  </>
+                ) : (
+                  <span className="loadout-item-text">Weapon</span>
+                )}
+              </div>
+              <div
+                className={`loadout-item-label ${getLoadoutLabelClass(lo.weapon?.name || 'Weapon')}`}
+              >
+                <em>{lo.weapon?.name || 'Weapon'}</em>
+              </div>
+            </div>
+
+            {[0, 1, 2].map((idx) => (
+              <div key={idx} className="loadout-item-wrapper">
+                <div
+                  className={`loadout-item gadget-item ${!lo.gadgets?.[idx] ? 'empty' : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (isViewOnlyMode) return
+                    openSelector('gadget', idx)
+                  }}
+                >
+                  {lo.gadgets?.[idx] ? (
+                    <>
+                      {lo.gadgets[idx].imageFile ? (
+                        <img
+                          src={lo.gadgets[idx].imageFile}
+                          alt={lo.gadgets[idx].name}
+                          className="gadget-image"
+                          onError={(e) => {
+                            e.target.style.display = 'none'
+                          }}
+                        />
+                      ) : (
+                        <span className="loadout-item-text">{lo.gadgets[idx].name}</span>
+                      )}
+                      {!isViewOnlyMode ? (
+                        <button
+                          type="button"
+                          className="loadout-randomize-btn-inside gadget-randomize"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleRandomizePresetLoadoutItem(pid, 'gadget', idx)
+                          }}
+                          title="Randomize gadget"
+                        >
+                          <SmallDiceIcon />
+                        </button>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="loadout-item-text">Gadget</span>
+                  )}
+                </div>
+                <div
+                  className={`loadout-item-label ${getLoadoutLabelClass(
+                    lo.gadgets?.[idx]?.name || `Gadget ${idx + 1}`
+                  )}`}
+                >
+                  <em>{lo.gadgets?.[idx]?.name || `Gadget ${idx + 1}`}</em>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="modal-body">
+        <div className="group-settings-content group-settings-loadouts-tab">
+          <h3>Bulk randomization</h3>
+          <p className="settings-description">
+            Used by <strong>Randomize Loadouts</strong> and when loadouts are randomized from{' '}
+            <strong>Randomize All</strong>. Per-player randomize buttons are unchanged.
+          </p>
+          <label className="team-settings-invite-label" htmlFor="loadout-randomization-source-select">
+            Randomization source
+          </label>
+          <select
+            id="loadout-randomization-source-select"
+            className="access-auth-input group-loadout-source-select"
+            value={loadoutRandomizationSource}
+            onChange={(e) => {
+              const v = e.target.value
+              if (isValidLoadoutRandomizationSource(v)) setLoadoutRandomizationSource(v)
+            }}
+            disabled={isViewOnlyMode}
+          >
+            <option value={LOADOUT_RANDOMIZATION_SOURCE_ITEMS}>Items — roll from enabled gear</option>
+            <option value={LOADOUT_RANDOMIZATION_SOURCE_PRESETS}>Presets — pick from saved presets</option>
+          </select>
+          {loadoutRandomizationSource === LOADOUT_RANDOMIZATION_SOURCE_PRESETS &&
+          filledPresetCount === 0 ? (
+            <p className="settings-description loadout-preset-fallback-note">
+              No presets with gear yet — bulk randomize falls back to items until at least one preset has
+              a class or item.
+            </p>
+          ) : null}
+          <label className="team-settings-invite-label" htmlFor="loadout-randomization-scope-select">
+            Loadout scope
+          </label>
+          <select
+            id="loadout-randomization-scope-select"
+            className="access-auth-input group-loadout-scope-select"
+            value={loadoutRandomizationScope}
+            onChange={(e) => {
+              const v = e.target.value
+              if (isValidLoadoutRandomizationScope(v)) setLoadoutRandomizationScope(v)
+            }}
+            disabled={isViewOnlyMode}
+          >
+            <option value={LOADOUT_RANDOMIZATION_SCOPE_UNIQUE}>Unique — each player</option>
+            <option value={LOADOUT_RANDOMIZATION_SCOPE_TEAM}>Team — one loadout per team</option>
+            <option value={LOADOUT_RANDOMIZATION_SCOPE_ALL}>All — one loadout for everyone</option>
+          </select>
+
+          <h3 className="loadout-preset-section-title">Preset loadouts</h3>
+          <p className="settings-description">
+            Save named builds to draw from when <strong>Randomization source</strong> is Presets. Player
+            position locks still skip bulk randomization; per-slot locks still apply when a preset is
+            applied.
+          </p>
+          <div className="loadout-preset-list">{presetList.map(renderPresetRow)}</div>
+          {!isViewOnlyMode ? (
+            <button
+              type="button"
+              className="randomize-btn loadout-preset-add-btn"
+              onClick={() =>
+                setLoadoutPresets((prev) => [
+                  ...normalizeLoadoutPresets(prev),
+                  {
+                    id: newLoadoutPresetId(),
+                    name: 'NEW PRESET',
+                    loadout: createEmptyLoadoutShape()
+                  }
+                ])
+              }
+            >
+              <FontAwesomeIcon icon={faPlus} className={FA_ICON_CLASS} aria-hidden />
+              <span>Add preset</span>
+            </button>
+          ) : null}
+        </div>
+      </div>
     )
   }
 
@@ -5136,58 +6165,134 @@ function App() {
             Copy code
           </button>
         </div>
-        <h3>Banner gradient</h3>
+        <h3>Banner</h3>
         <p className="settings-description">
-          Choose two colors for this group banner.
+          Use a gradient or an uploaded image on the dashboard group tile.
         </p>
-        {groupGradientStatus ? (
-          <p className="settings-description">{groupGradientStatus}</p>
+        {groupBannerDisplayStatus ? (
+          <p className="settings-description">{groupBannerDisplayStatus}</p>
         ) : null}
-        {groupGradientError ? (
-          <p className="access-modal-error">{groupGradientError}</p>
+        {groupBannerDisplayError ? (
+          <p className="access-modal-error">{groupBannerDisplayError}</p>
         ) : null}
-        <div className="group-gradient-settings-row">
-          <label className="group-gradient-settings-color-field" htmlFor="group-gradient-color-a">
-            <span className="team-settings-invite-label">Color A</span>
-            <input
-              id="group-gradient-color-a"
-              type="color"
-              value={groupGradientColorA}
-              onChange={(e) => {
-                setGroupGradientColorA(e.target.value)
-                if (groupGradientError) setGroupGradientError('')
-                if (groupGradientStatus) setGroupGradientStatus('')
-              }}
-              disabled={!canEditGroupGradient || groupGradientBusy}
-            />
+        <div className="group-banner-mode-row">
+          <label className="team-settings-invite-label" htmlFor="group-banner-mode-select">
+            Banner style
           </label>
-          <label className="group-gradient-settings-color-field" htmlFor="group-gradient-color-b">
-            <span className="team-settings-invite-label">Color B</span>
-            <input
-              id="group-gradient-color-b"
-              type="color"
-              value={groupGradientColorB}
-              onChange={(e) => {
-                setGroupGradientColorB(e.target.value)
-                if (groupGradientError) setGroupGradientError('')
-                if (groupGradientStatus) setGroupGradientStatus('')
-              }}
-              disabled={!canEditGroupGradient || groupGradientBusy}
-            />
-          </label>
-          <button
-            type="button"
-            className="randomize-btn team-settings-invite-copy-btn group-gradient-settings-save-btn"
-            onClick={handleSaveGroupGradient}
-            disabled={!canEditGroupGradient || groupGradientBusy || !hasGroupGradientChanges}
+          <select
+            id="group-banner-mode-select"
+            className="access-auth-input group-banner-mode-select"
+            value={groupBannerModeDraft}
+            onChange={(e) => {
+              setGroupBannerModeDraft(normalizeGroupBannerMode(e.target.value))
+              if (groupBannerDisplayError) setGroupBannerDisplayError('')
+              if (groupBannerDisplayStatus) setGroupBannerDisplayStatus('')
+            }}
+            disabled={!canEditGroupGradient || groupBannerDisplayBusy}
           >
-            {groupGradientBusy ? 'Saving…' : 'Save'}
-          </button>
+            <option value="gradient">Gradient</option>
+            <option value="image">Image</option>
+          </select>
         </div>
+        {groupBannerModeDraft === 'image' ? (
+          <div className="group-banner-image-field">
+            <p className="settings-description">
+              PNG, JPEG, WebP, or GIF. Large images are automatically optimized.
+            </p>
+            <input
+              ref={groupBannerFileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              className="group-banner-file-input"
+              disabled={!canEditGroupGradient || groupBannerDisplayBusy}
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                if (groupBannerDisplayError) setGroupBannerDisplayError('')
+                if (groupBannerDisplayStatus) setGroupBannerDisplayStatus('')
+                setGroupBannerPendingFile(file)
+                setGroupBannerLocalPreviewUrl((prev) => {
+                  if (prev) URL.revokeObjectURL(prev)
+                  return URL.createObjectURL(file)
+                })
+              }}
+            />
+            <button
+              type="button"
+              className="randomize-btn team-settings-invite-copy-btn group-gradient-settings-save-btn"
+              onClick={handleSaveGroupBannerDisplay}
+              disabled={
+                !canEditGroupGradient || groupBannerDisplayBusy || !hasGroupBannerDisplayChanges
+              }
+            >
+              {groupBannerDisplayBusy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        ) : null}
+        {groupBannerModeDraft === 'gradient' ? (
+          <>
+            <h3>Banner gradient</h3>
+            <p className="settings-description">
+              Choose two colors for this group banner.
+            </p>
+            {groupGradientStatus ? (
+              <p className="settings-description">{groupGradientStatus}</p>
+            ) : null}
+            {groupGradientError ? (
+              <p className="access-modal-error">{groupGradientError}</p>
+            ) : null}
+            <div className="group-gradient-settings-row">
+              <label className="group-gradient-settings-color-field" htmlFor="group-gradient-color-a">
+                <span className="team-settings-invite-label">Color A</span>
+                <input
+                  id="group-gradient-color-a"
+                  type="color"
+                  value={groupGradientColorA}
+                  onChange={(e) => {
+                    setGroupGradientColorA(e.target.value)
+                    if (groupGradientError) setGroupGradientError('')
+                    if (groupGradientStatus) setGroupGradientStatus('')
+                  }}
+                  disabled={!canEditGroupGradient || groupGradientBusy || groupBannerDisplayBusy}
+                />
+              </label>
+              <label className="group-gradient-settings-color-field" htmlFor="group-gradient-color-b">
+                <span className="team-settings-invite-label">Color B</span>
+                <input
+                  id="group-gradient-color-b"
+                  type="color"
+                  value={groupGradientColorB}
+                  onChange={(e) => {
+                    setGroupGradientColorB(e.target.value)
+                    if (groupGradientError) setGroupGradientError('')
+                    if (groupGradientStatus) setGroupGradientStatus('')
+                  }}
+                  disabled={!canEditGroupGradient || groupGradientBusy || groupBannerDisplayBusy}
+                />
+              </label>
+              <button
+                type="button"
+                className="randomize-btn team-settings-invite-copy-btn group-gradient-settings-save-btn"
+                onClick={handleSaveGroupGradientSection}
+                disabled={
+                  !canEditGroupGradient ||
+                  groupGradientBusy ||
+                  groupBannerDisplayBusy ||
+                  (!hasGroupGradientChanges && !hasGroupBannerDisplayChanges)
+                }
+              >
+                {groupGradientBusy || groupBannerDisplayBusy ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </>
+        ) : null}
         <div className="group-gradient-preview-wrap">
           <span className="team-settings-invite-label">Dashboard preview</span>
           <div className="groups-dashboard-group-tile group-gradient-preview-tile" aria-hidden={true}>
-            <div className="groups-dashboard-group-tile-banner" style={groupGradientPreviewStyle} />
+            <GroupDashboardTileBanner
+              group={groupBannerPreviewGroup}
+              imageSrcOverride={groupBannerLocalPreviewUrl || undefined}
+            />
             <div className="groups-dashboard-group-tile-body">
               {(groupGradientPreviewProfiles.length > 0 || groupGradientPreviewOverflow > 0) ? (
                 <div className="groups-dashboard-member-chips">
@@ -5353,15 +6458,6 @@ function App() {
         </div>
         {/* Top Right Controls */}
         <div className="top-right-controls">
-          {!isViewOnlyMode && (
-            <button 
-              className="randomize-all-btn" 
-              onClick={handleRandomizeAll}
-            >
-              <DiceIcon />
-              <span className="randomize-all-label">Randomize All</span>
-            </button>
-          )}
           <div className="profile-menu-wrap">
             <button
               ref={profileMenuButtonRef}
@@ -5773,6 +6869,12 @@ function App() {
               <div className="randomize-section">
                 <button 
                   className="randomize-btn" 
+                  onClick={handleRandomizeAll}
+                >
+                  Randomize All
+                </button>
+                <button 
+                  className="randomize-btn" 
                   onClick={handleRandomizeTeams}
                 >
                   Randomize Teams
@@ -5851,7 +6953,7 @@ function App() {
                     No one is in this group yet. Share the join code from the group list so teammates can join.
                   </p>
                 ) : (
-                  participantsSortedForPanel.map((id) => {
+                  participantsSortedForPanel.map((id, index) => {
                     const row = groupMemberRosterById.get(id)
                     const label = labelForParticipant(id)
                     const isAssigned = assignedParticipantIdSet.has(id)
@@ -5889,10 +6991,10 @@ function App() {
                     const showParticipantRemove = canRemoveGroupMemberFromGroup(groupRole, roleRaw)
                     const showParticipantAddToTeam = !isViewOnlyMode && teamMenuEntries.length > 0
                     const isSelfParticipantRow = session?.user?.id === id
-                    const showParticipantLeaveGroup = groupRole !== 'owner' && isSelfParticipantRow
+                    const showParticipantLeaveGroup =
+                      groupRole != null && groupRole !== 'owner' && isSelfParticipantRow
                     const showParticipantMakeNewOwner =
                       groupRole === 'owner' && !isSelfParticipantRow && roleRaw !== 'owner'
-                    const showInlineAvailabilityChip = canEditStatus && !isViewOnlyMode
                     const hasParticipantRowMenu = isViewOnlyMode
                       ? Boolean(
                           isSelfParticipantRow && (showParticipantToggleAvail || showParticipantLeaveGroup)
@@ -5904,7 +7006,31 @@ function App() {
                         showParticipantRemove ||
                         showParticipantAddToTeam ||
                         showParticipantLeaveGroup
-                    return (
+                    const previousId = index > 0 ? participantsSortedForPanel[index - 1] : null
+                    const previousUnavailable =
+                      !!previousId && isParticipantUnavailableForTeams(previousId)
+                    const showAvailableHeader =
+                      availabilityStatus !== 'unavailable' &&
+                      (index === 0 || previousUnavailable)
+                    const showUnavailableHeader =
+                      availabilityStatus === 'unavailable' && (index === 0 || !previousUnavailable)
+                    return [
+                      showAvailableHeader ? (
+                        <div
+                          key={`participants-header-available-${id}`}
+                          className="participants-list-section-header"
+                        >
+                          Available
+                        </div>
+                      ) : null,
+                      showUnavailableHeader ? (
+                        <div
+                          key={`participants-header-unavailable-${id}`}
+                          className="participants-list-section-header"
+                        >
+                          Unavailable
+                        </div>
+                      ) : null,
                       <div
                         key={id}
                         className={[
@@ -5977,53 +7103,6 @@ function App() {
                                 ) : null}
                                 <span>{roleLabel}</span>
                               </span>
-                              {showInlineAvailabilityChip && session?.user ? (
-                                <button
-                                  type="button"
-                                  className={[
-                                    'participant-badge',
-                                    'participant-badge--manual-status',
-                                    'participant-manual-status-chip-toggle',
-                                    availabilityStatus === 'available' && 'is-available',
-                                    availabilityStatus === 'unavailable' && 'is-unavailable'
-                                  ]
-                                    .filter(Boolean)
-                                    .join(' ')}
-                                  onClick={() =>
-                                    handleGroupManualStatusChange(
-                                      id,
-                                      availabilityStatus === 'unavailable' ? 'available' : 'unavailable'
-                                    )
-                                  }
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  aria-label={`Toggle availability for ${label}`}
-                                  title={`Set ${label} to ${
-                                    availabilityStatus === 'unavailable' ? 'Available' : 'Unavailable'
-                                  }`}
-                                >
-                                  <span>{groupManualStatusLabel(availabilityStatus)}</span>
-                                  <span
-                                    className="participant-manual-status-chip-toggle__icon"
-                                    aria-hidden="true"
-                                  >
-                                    <RefreshIcon />
-                                  </span>
-                                </button>
-                              ) : (
-                                <span
-                                  className={[
-                                    'participant-badge',
-                                    'participant-badge--manual-status',
-                                    availabilityStatus === 'available' && 'is-available',
-                                    availabilityStatus === 'unavailable' && 'is-unavailable'
-                                  ]
-                                    .filter(Boolean)
-                                    .join(' ')}
-                                >
-                                  {groupManualStatusLabel(availabilityStatus)}
-                                </span>
-                              )}
                             </div>
                           </div>
                         </div>
@@ -6214,7 +7293,7 @@ function App() {
                           </div>
                         ) : null}
                       </div>
-                    )
+                    ]
                   })
                 )}
               </div>
@@ -6225,6 +7304,18 @@ function App() {
           </aside>
 
           <section className="app-content">
+            {!groupRole ? (
+              <div
+                className="app-content-loading"
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <span className="visually-hidden">Loading group</span>
+                <div className="app-full-page-loading__spinner" aria-hidden="true" />
+              </div>
+            ) : (
+              <>
             {/* Main Content Area */}
             <div className="main-content">
           {/* Team Builds Panel */}
@@ -6509,6 +7600,34 @@ function App() {
                                       swapIds.sort((a, b) =>
                                         labelForParticipant(a).localeCompare(labelForParticipant(b))
                                       )
+                                      const applyTeamTargetIds = (
+                                        teamAssignments[teamIndex] || []
+                                      )
+                                        .filter(
+                                          (pid) =>
+                                            pid &&
+                                            pid !== assignedPlayer &&
+                                            lockedParticipants[pid] === undefined
+                                        )
+                                        .sort((a, b) => String(a).localeCompare(String(b)))
+                                      const applyAllTargetIds = []
+                                      for (const list of Object.values(teamAssignments)) {
+                                        for (const pid of list || []) {
+                                          if (!pid || pid === assignedPlayer) continue
+                                          if (lockedParticipants[pid] !== undefined) continue
+                                          if (!applyAllTargetIds.includes(pid))
+                                            applyAllTargetIds.push(pid)
+                                        }
+                                      }
+                                      applyAllTargetIds.sort((a, b) =>
+                                        labelForParticipant(a).localeCompare(
+                                          labelForParticipant(b)
+                                        )
+                                      )
+                                      const applyTeamTargetsEmpty =
+                                        applyTeamTargetIds.length === 0
+                                      const applyAllTargetsEmpty =
+                                        applyAllTargetIds.length === 0
                                       const hasLoadoutToClear = loadoutHasAnyFilled(
                                         loadouts[assignedPlayer]
                                       )
@@ -6579,6 +7698,7 @@ function App() {
                                                 )
                                                 setAssignedSlotMenuMoveSubOpen(false)
                                                 setAssignedSlotMenuSwapSubOpen(false)
+                                                setAssignedSlotMenuApplySubOpen(false)
                                                 if (assignedSlotMenuKey === slotMenuKey) {
                                                   setAssignedSlotMenuPosition(null)
                                                 } else {
@@ -6670,6 +7790,7 @@ function App() {
                                                         return
                                                       setAssignedSlotMenuMoveSubOpen((s) => !s)
                                                       setAssignedSlotMenuSwapSubOpen(false)
+                                                      setAssignedSlotMenuApplySubOpen(false)
                                                     }}
                                                   >
                                                     <span>Move player</span>
@@ -6792,6 +7913,84 @@ function App() {
                                                       className="participant-actions-menu__item participant-actions-menu__item--with-chevron"
                                                       aria-haspopup="true"
                                                       aria-expanded={
+                                                        assignedSlotMenuApplySubOpen && menuOpen
+                                                      }
+                                                      disabled={!hasLoadoutToClear}
+                                                      title={
+                                                        !hasLoadoutToClear
+                                                          ? 'Loadout is already empty'
+                                                          : undefined
+                                                      }
+                                                      onClick={() => {
+                                                        if (!hasLoadoutToClear) return
+                                                        setAssignedSlotMenuApplySubOpen((s) => !s)
+                                                        setAssignedSlotMenuMoveSubOpen(false)
+                                                        setAssignedSlotMenuSwapSubOpen(false)
+                                                      }}
+                                                    >
+                                                      <span>Apply to</span>
+                                                      <ChevronRightIcon />
+                                                    </button>
+                                                    {assignedSlotMenuApplySubOpen ? (
+                                                      <div
+                                                        className="participant-actions-menu__sub"
+                                                        role="presentation"
+                                                        style={assignedSlotSubmenuStyle}
+                                                      >
+                                                        <button
+                                                          type="button"
+                                                          role="menuitem"
+                                                          className="participant-actions-menu__item participant-actions-menu__sub-item"
+                                                          disabled={applyTeamTargetsEmpty}
+                                                          title={
+                                                            applyTeamTargetsEmpty
+                                                              ? 'No eligible teammates'
+                                                              : undefined
+                                                          }
+                                                          onClick={() => {
+                                                            if (applyTeamTargetsEmpty) return
+                                                            handleApplySourceLoadoutToTargets(
+                                                              assignedPlayer,
+                                                              applyTeamTargetIds
+                                                            )
+                                                            closeAssignedSlotMenu()
+                                                          }}
+                                                        >
+                                                          Team
+                                                        </button>
+                                                        <button
+                                                          type="button"
+                                                          role="menuitem"
+                                                          className="participant-actions-menu__item participant-actions-menu__sub-item"
+                                                          disabled={applyAllTargetsEmpty}
+                                                          title={
+                                                            applyAllTargetsEmpty
+                                                              ? 'No other eligible players'
+                                                              : undefined
+                                                          }
+                                                          onClick={() => {
+                                                            if (applyAllTargetsEmpty) return
+                                                            handleApplySourceLoadoutToTargets(
+                                                              assignedPlayer,
+                                                              applyAllTargetIds
+                                                            )
+                                                            closeAssignedSlotMenu()
+                                                          }}
+                                                        >
+                                                          All
+                                                        </button>
+                                                      </div>
+                                                    ) : null}
+                                                  </div>
+                                                ) : null}
+                                                {!isViewOnlyMode ? (
+                                                  <div className="participant-actions-menu__sub-host">
+                                                    <button
+                                                      type="button"
+                                                      role="menuitem"
+                                                      className="participant-actions-menu__item participant-actions-menu__item--with-chevron"
+                                                      aria-haspopup="true"
+                                                      aria-expanded={
                                                         assignedSlotMenuSwapSubOpen && menuOpen
                                                       }
                                                       disabled={swapIds.length === 0}
@@ -6804,6 +8003,7 @@ function App() {
                                                         if (swapIds.length === 0) return
                                                         setAssignedSlotMenuSwapSubOpen((s) => !s)
                                                         setAssignedSlotMenuMoveSubOpen(false)
+                                                        setAssignedSlotMenuApplySubOpen(false)
                                                       }}
                                                     >
                                                       <span>Swap loadout</span>
@@ -6862,16 +8062,19 @@ function App() {
                                             alt={loadouts[assignedPlayer].class}
                                             className="class-image"
                                           />
-                                          <button
-                                            className="loadout-randomize-btn-inside class-randomize"
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              handleRandomizeSingleLoadoutItem(assignedPlayer, 'class')
-                                            }}
-                                            title="Randomize class"
-                                          >
-                                            <SmallDiceIcon />
-                                          </button>
+                                          {!isViewOnlyMode ? (
+                                            <button
+                                              type="button"
+                                              className="loadout-randomize-btn-inside class-randomize"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleRandomizeSingleLoadoutItem(assignedPlayer, 'class')
+                                              }}
+                                              title="Randomize class"
+                                            >
+                                              <SmallDiceIcon />
+                                            </button>
+                                          ) : null}
                                           {!isViewOnlyMode ? (
                                             <button
                                               className="loadout-lock-btn-inside class-lock"
@@ -6924,16 +8127,19 @@ function App() {
                                           ) : (
                                             <span className="loadout-item-text">{loadouts[assignedPlayer].specialization.name}</span>
                                           )}
-                                          <button
-                                            className="loadout-randomize-btn-inside spec-randomize"
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              handleRandomizeSingleLoadoutItem(assignedPlayer, 'specialization')
-                                            }}
-                                            title="Randomize specialization"
-                                          >
-                                            <SmallDiceIcon />
-                                          </button>
+                                          {!isViewOnlyMode ? (
+                                            <button
+                                              type="button"
+                                              className="loadout-randomize-btn-inside spec-randomize"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleRandomizeSingleLoadoutItem(assignedPlayer, 'specialization')
+                                              }}
+                                              title="Randomize specialization"
+                                            >
+                                              <SmallDiceIcon />
+                                            </button>
+                                          ) : null}
                                           {!isViewOnlyMode ? (
                                             <button
                                               className="loadout-lock-btn-inside spec-lock"
@@ -6986,16 +8192,19 @@ function App() {
                                           ) : (
                                             <span className="loadout-item-text">{loadouts[assignedPlayer].weapon.name}</span>
                                           )}
-                                          <button
-                                            className="loadout-randomize-btn-inside weapon-randomize"
-                                            onClick={(e) => {
-                                              e.stopPropagation()
-                                              handleRandomizeSingleLoadoutItem(assignedPlayer, 'weapon')
-                                            }}
-                                            title="Randomize weapon"
-                                          >
-                                            <SmallDiceIcon />
-                                          </button>
+                                          {!isViewOnlyMode ? (
+                                            <button
+                                              type="button"
+                                              className="loadout-randomize-btn-inside weapon-randomize"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleRandomizeSingleLoadoutItem(assignedPlayer, 'weapon')
+                                              }}
+                                              title="Randomize weapon"
+                                            >
+                                              <SmallDiceIcon />
+                                            </button>
+                                          ) : null}
                                           {!isViewOnlyMode ? (
                                             <button
                                               className="loadout-lock-btn-inside weapon-lock"
@@ -7049,16 +8258,19 @@ function App() {
                                             ) : (
                                               <span className="loadout-item-text">{loadouts[assignedPlayer].gadgets[idx].name}</span>
                                             )}
-                                            <button
-                                              className="loadout-randomize-btn-inside gadget-randomize"
-                                              onClick={(e) => {
-                                                e.stopPropagation()
-                                                handleRandomizeSingleLoadoutItem(assignedPlayer, 'gadget', idx)
-                                              }}
-                                              title="Randomize gadget"
-                                            >
-                                              <SmallDiceIcon />
-                                            </button>
+                                            {!isViewOnlyMode ? (
+                                              <button
+                                                type="button"
+                                                className="loadout-randomize-btn-inside gadget-randomize"
+                                                onClick={(e) => {
+                                                  e.stopPropagation()
+                                                  handleRandomizeSingleLoadoutItem(assignedPlayer, 'gadget', idx)
+                                                }}
+                                                title="Randomize gadget"
+                                              >
+                                                <SmallDiceIcon />
+                                              </button>
+                                            ) : null}
                                             {!isViewOnlyMode ? (
                                               <button
                                                 className="loadout-lock-btn-inside gadget-lock"
@@ -7130,6 +8342,8 @@ function App() {
             )}
           </div>
           </div>
+              </>
+            )}
           </section>
         </div>
       </main>
@@ -7208,7 +8422,13 @@ function App() {
                   </button>
                 ))}
               </nav>
-              <section className="group-settings-panel">
+              <section
+                className={`group-settings-panel${
+                  groupSettingsActiveTab === GROUP_SETTINGS_TAB_OVERRIDES
+                    ? ' group-settings-panel--overrides'
+                    : ''
+                }`}
+              >
                 {renderGroupSettingsPanelContent()}
               </section>
             </div>
@@ -7244,7 +8464,7 @@ function App() {
                   )}
                 </div>
               )}
-              {loadoutSelector.type === 'specialization' && !loadouts[loadoutSelector.participant]?.class && (
+              {loadoutSelector.type === 'specialization' && !loadoutSelectorEffectiveLoadout?.class && (
                 <div className="selector-options">
                   {specializationsByClass.flatMap(({ className, specializations }) =>
                     specializations.map((spec) =>
@@ -7260,9 +8480,9 @@ function App() {
                   )}
                 </div>
               )}
-              {loadoutSelector.type === 'specialization' && loadouts[loadoutSelector.participant]?.class && (
+              {loadoutSelector.type === 'specialization' && loadoutSelectorEffectiveLoadout?.class && (
                 <div className="selector-options">
-                  {(gameConfig.classes[loadouts[loadoutSelector.participant].class]?.specializations || []).map((spec) =>
+                  {(gameConfig.classes[loadoutSelectorEffectiveLoadout.class]?.specializations || []).map((spec) =>
                     renderSelectorOptionCard({
                       key: spec.name,
                       label: spec.name,
@@ -7273,7 +8493,7 @@ function App() {
                   )}
                 </div>
               )}
-              {loadoutSelector.type === 'weapon' && !loadouts[loadoutSelector.participant]?.class && (
+              {loadoutSelector.type === 'weapon' && !loadoutSelectorEffectiveLoadout?.class && (
                 <div className="selector-options">
                   {weaponsByClass.flatMap(({ className, weapons }) =>
                     weapons.map((weapon) =>
@@ -7289,9 +8509,9 @@ function App() {
                   )}
                 </div>
               )}
-              {loadoutSelector.type === 'weapon' && loadouts[loadoutSelector.participant]?.class && (
+              {loadoutSelector.type === 'weapon' && loadoutSelectorEffectiveLoadout?.class && (
                 <div className="selector-options">
-                  {(gameConfig.classes[loadouts[loadoutSelector.participant].class]?.weapons || []).map((weapon) =>
+                  {(gameConfig.classes[loadoutSelectorEffectiveLoadout.class]?.weapons || []).map((weapon) =>
                     renderSelectorOptionCard({
                       key: weapon.name,
                       label: weapon.name,
@@ -7302,7 +8522,7 @@ function App() {
                   )}
                 </div>
               )}
-              {loadoutSelector.type === 'gadget' && !loadouts[loadoutSelector.participant]?.class && (
+              {loadoutSelector.type === 'gadget' && !loadoutSelectorEffectiveLoadout?.class && (
                 <div className="selector-options">
                   {gadgetsByClass.flatMap(({ className, gadgets }) =>
                     gadgets.map((gadget) =>
@@ -7318,12 +8538,12 @@ function App() {
                   )}
                 </div>
               )}
-              {loadoutSelector.type === 'gadget' && loadouts[loadoutSelector.participant]?.class && (
+              {loadoutSelector.type === 'gadget' && loadoutSelectorEffectiveLoadout?.class && (
                 <div className="selector-options">
-                  {gameConfig.classes[loadouts[loadoutSelector.participant].class]?.gadgets
+                  {gameConfig.classes[loadoutSelectorEffectiveLoadout.class]?.gadgets
                     ?.filter(gadget => {
                       // Filter out already selected gadgets (unless it's the current slot)
-                      const currentGadgets = loadouts[loadoutSelector.participant]?.gadgets || []
+                      const currentGadgets = loadoutSelectorEffectiveLoadout?.gadgets || []
                       return !currentGadgets.some((g, i) => g && g.name === gadget.name && i !== loadoutSelector.index)
                     })
                     ?.map((gadget) =>

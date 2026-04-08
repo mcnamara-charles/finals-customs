@@ -1,13 +1,7 @@
 import { useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import {
-  faCircleExclamation,
-  faEnvelope,
-  faRightToBracket,
-  faUser,
-  faUserPlus
-} from '@fortawesome/free-solid-svg-icons'
+import { faCircleExclamation, faEnvelope, faRightToBracket, faUserPlus } from '@fortawesome/free-solid-svg-icons'
 import { useAuth } from '../auth/authContext'
 import {
   clearAuthEmailHint,
@@ -20,6 +14,8 @@ import { supabase } from '../lib/supabaseClient'
 import { AuthOAuthButtons } from '../components/AuthOAuthButtons'
 import { AuthPasswordField } from '../components/AuthPasswordField'
 import { FullPageLoading } from '../components/FullPageLoading'
+import { UsernameInputWithAvailability } from '../components/UsernameInputWithAvailability'
+import { getSignupPasswordStrength } from '../lib/passwordStrength'
 
 const FA_ICON_CLASS = 'app-fa-icon'
 
@@ -89,6 +85,8 @@ export function SignupPage() {
     }
   }
 
+  const { tier: passwordTier, fillPct: passwordFillPct } = getSignupPasswordStrength(password)
+
   return (
     <div className="access-gate-page signup-page">
       <div className="access-gate-card access-gate-card-wide signup-page__card">
@@ -113,26 +111,16 @@ export function SignupPage() {
             handleSubmit()
           }}
         >
-          <div className="signup-page__field">
-            <label htmlFor="signup-username" className="visually-hidden">
-              Username
-            </label>
-            <span className="signup-page__input-affix" aria-hidden="true">
-              <FontAwesomeIcon icon={faUser} className={FA_ICON_CLASS} />
-            </span>
-            <input
+          <div className="signup-page__username-block">
+            <UsernameInputWithAvailability
               id="signup-username"
-              type="text"
               value={username}
               onChange={(e) => {
                 setUsername(e.target.value)
                 if (error) setError('')
               }}
-              placeholder="Username"
-              className="access-auth-input"
-              autoComplete="username"
-              autoFocus
               disabled={busy}
+              autoFocus
             />
           </div>
 
@@ -169,6 +157,54 @@ export function SignupPage() {
             autoComplete="new-password"
             disabled={busy}
           />
+
+          {password.length > 0 ? (
+            <div className="signup-page__password-strength" data-tier={passwordTier}>
+              <div className="signup-page__password-strength-track" aria-hidden="true">
+                <div
+                  className="signup-page__password-strength-fill"
+                  style={{ width: `${passwordFillPct}%` }}
+                />
+              </div>
+              <div className="signup-page__password-strength-labels" aria-hidden="true">
+                <span
+                  className={
+                    passwordTier === 'weak'
+                      ? 'signup-page__password-strength-label signup-page__password-strength-label--active'
+                      : 'signup-page__password-strength-label'
+                  }
+                >
+                  Weak
+                </span>
+                <span
+                  className={
+                    passwordTier === 'okay'
+                      ? 'signup-page__password-strength-label signup-page__password-strength-label--active'
+                      : 'signup-page__password-strength-label'
+                  }
+                >
+                  Okay
+                </span>
+                <span
+                  className={
+                    passwordTier === 'strong'
+                      ? 'signup-page__password-strength-label signup-page__password-strength-label--active'
+                      : 'signup-page__password-strength-label'
+                  }
+                >
+                  Strong
+                </span>
+              </div>
+              <span
+                className="visually-hidden"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                Password strength: {passwordTier}.
+              </span>
+            </div>
+          ) : null}
 
           <button
             className="signup-page__submit"

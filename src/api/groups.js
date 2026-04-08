@@ -2,16 +2,102 @@ import { supabase } from './client.js'
 
 const MEMBER_PREVIEW_LIMIT = 3
 
+export const GROUP_BANNER_BUCKET = 'group-banners'
+
+const GROUP_BANNER_MAX_BYTES = 2 * 1024 * 1024
+const GROUP_BANNER_MAX_DIMENSION = 1920
+
+const GROUP_BANNER_MIME_TO_EXT = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif'
+}
+
+/**
+ * @param {File} file
+ * @returns {Promise<File>}
+ */
+async function optimizeGroupBannerFile(file) {
+  if (typeof window === 'undefined') return file
+  const sourceUrl = URL.createObjectURL(file)
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => reject(new Error('Could not load image for optimization'))
+      img.src = sourceUrl
+    })
+    const sourceWidth = image.naturalWidth || image.width
+    const sourceHeight = image.naturalHeight || image.height
+    if (!sourceWidth || !sourceHeight) return file
+
+    const maxSide = Math.max(sourceWidth, sourceHeight)
+    const scale = maxSide > GROUP_BANNER_MAX_DIMENSION ? GROUP_BANNER_MAX_DIMENSION / maxSide : 1
+    const targetWidth = Math.max(1, Math.round(sourceWidth * scale))
+    const targetHeight = Math.max(1, Math.round(sourceHeight * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = targetWidth
+    canvas.height = targetHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+    ctx.drawImage(image, 0, 0, targetWidth, targetHeight)
+
+    // Prefer WebP for compact uploads; fallback to JPEG for broader support.
+    const outputMime = 'image/webp'
+    const outputExt = 'webp'
+    const qualitySteps = [0.9, 0.82, 0.74, 0.66, 0.58, 0.5, 0.42]
+    let bestBlob = null
+    for (const q of qualitySteps) {
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, outputMime, q))
+      if (!blob) continue
+      bestBlob = blob
+      if (blob.size <= GROUP_BANNER_MAX_BYTES) break
+    }
+    if (!bestBlob) return file
+
+    const baseName = String(file.name || 'banner').replace(/\.[^.]+$/, '')
+    return new File([bestBlob], `${baseName}.${outputExt}`, {
+      type: outputMime,
+      lastModified: Date.now()
+    })
+  } catch {
+    return file
+  } finally {
+    URL.revokeObjectURL(sourceUrl)
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @returns {'gradient'|'image'}
+ */
+export function normalizeGroupBannerMode(value) {
+  return value === 'image' ? 'image' : 'gradient'
+}
+
+/**
+ * @param {unknown} url
+ */
+export function isPlausibleGroupBannerImageUrl(url) {
+  const u = String(url || '').trim()
+  if (!u || u.length > 2048) return false
+  return /^https:\/\//i.test(u)
+}
+
 /**
  * @param {string} userId
- * @returns {Promise<Array<{ id: string, name: string, join_code: string, gradient_color_a: string, gradient_color_b: string, role: string, member_count: number, member_preview_user_ids: string[], member_preview_profiles: Array<{ user_id: string, username?: string | null, display_name?: string | null, avatar_url?: string | null, discord_user_id?: string | null, discord_avatar_hash?: string | null }> }>>}
+ * @returns {Promise<Array<{ id: string, name: string, join_code: string, gradient_color_a: string, gradient_color_b: string, banner_mode: 'gradient'|'image', banner_image_url: string | null, role: string, member_count: number, member_preview_user_ids: string[], member_preview_profiles: Array<{ user_id: string, username?: string | null, display_name?: string | null, avatar_url?: string | null, discord_user_id?: string | null, discord_avatar_hash?: string | null }> }>>}
  */
 export async function fetchMyGroups(userId) {
   if (!supabase || !userId) return []
 
   const { data, error } = await supabase
     .from('group_memberships')
-    .select('role, groups (id, name, join_code, gradient_color_a, gradient_color_b)')
+    .select(
+      'role, groups (id, name, join_code, gradient_color_a, gradient_color_b, banner_mode, banner_image_url)'
+    )
     .eq('user_id', userId)
 
   if (error) throw error
@@ -26,6 +112,8 @@ export async function fetchMyGroups(userId) {
         join_code: g.join_code,
         gradient_color_a: g.gradient_color_a,
         gradient_color_b: g.gradient_color_b,
+        banner_mode: normalizeGroupBannerMode(g.banner_mode),
+        banner_image_url: g.banner_image_url != null ? String(g.banner_image_url).trim() || null : null,
         role: row.role
       }
     })
@@ -336,6 +424,62 @@ export async function setGroupGradientColors(groupId, colorA, colorB) {
     group_id: groupId,
     color_a: colorA,
     color_b: colorB
+  })
+  if (error) throw error
+}
+
+/**
+ * @param {string} groupId
+ * @param {File} file
+ * @returns {Promise<string>} public URL
+ */
+export async function uploadGroupBannerImage(groupId, file) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  if (!file || typeof file !== 'object') throw new Error('Missing image file')
+
+  const mime = String(file.type || '').toLowerCase()
+  const ext = GROUP_BANNER_MIME_TO_EXT[mime]
+  if (!ext) throw new Error('Use a PNG, JPEG, WebP, or GIF image')
+
+  const optimizedFile = await optimizeGroupBannerFile(file)
+  const uploadMime = String(optimizedFile.type || '').toLowerCase()
+  const uploadExt = GROUP_BANNER_MIME_TO_EXT[uploadMime] || ext
+
+  const objectId =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`
+  const path = `${groupId}/${objectId}.${uploadExt}`
+
+  const { error: upErr } = await supabase.storage.from(GROUP_BANNER_BUCKET).upload(path, optimizedFile, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: uploadMime || undefined
+  })
+  if (upErr) throw upErr
+
+  const { data } = supabase.storage.from(GROUP_BANNER_BUCKET).getPublicUrl(path)
+  const publicUrl = data?.publicUrl && String(data.publicUrl).trim()
+  if (!publicUrl) throw new Error('Could not resolve image URL')
+  return publicUrl
+}
+
+/**
+ * @param {string} groupId
+ * @param {'gradient'|'image'} mode
+ * @param {string | null | undefined} imageUrl required when mode is image
+ */
+export async function setGroupBannerDisplay(groupId, mode, imageUrl) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  if (!groupId) throw new Error('Missing group id')
+  const normalizedMode = normalizeGroupBannerMode(mode)
+  const trimmedUrl = imageUrl != null ? String(imageUrl).trim() : ''
+
+  const { error } = await supabase.rpc('set_group_banner_display', {
+    p_group_id: groupId,
+    p_mode: normalizedMode,
+    p_image_url: normalizedMode === 'image' ? trimmedUrl : null
   })
   if (error) throw error
 }

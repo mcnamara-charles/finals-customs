@@ -42,28 +42,47 @@ export async function updateAccountPassword(newPassword) {
 }
 
 /**
+ * @param {string} userId
+ */
+export async function markUsernameOnboardingComplete(userId) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      username_onboarding_completed: true,
+      updated_at: new Date().toISOString()
+    })
+    .eq('user_id', userId)
+  if (error) throw error
+}
+
+/**
  * Updates `profiles.username` and `profiles.display_name`, then auth `user_metadata.username`.
  * @param {string} userId
  * @param {string} normalizedUsername from {@link validateUsernameForUpdate}
+ * @param {{ markUsernameOnboardingComplete?: boolean }} [options]
  */
-export async function updateUsernameEverywhere(userId, normalizedUsername) {
+export async function updateUsernameEverywhere(userId, normalizedUsername, options = {}) {
   if (!supabase) throw new Error('Supabase is not configured')
+  const { markUsernameOnboardingComplete = false } = options
   const { data: currentProfile, error: currentProfileError } = await supabase
     .from('profiles')
-    .select('username, display_name')
+    .select('username, display_name, username_onboarding_completed')
     .eq('user_id', userId)
     .maybeSingle()
 
   if (currentProfileError) throw currentProfileError
 
-  const { error: profileError } = await supabase
-    .from('profiles')
-    .update({
-      username: normalizedUsername,
-      display_name: normalizedUsername,
-      updated_at: new Date().toISOString()
-    })
-    .eq('user_id', userId)
+  const profilePatch = {
+    username: normalizedUsername,
+    display_name: normalizedUsername,
+    updated_at: new Date().toISOString()
+  }
+  if (markUsernameOnboardingComplete) {
+    profilePatch.username_onboarding_completed = true
+  }
+
+  const { error: profileError } = await supabase.from('profiles').update(profilePatch).eq('user_id', userId)
 
   if (profileError) {
     const code = String(profileError.code || '')
@@ -87,6 +106,7 @@ export async function updateUsernameEverywhere(userId, normalizedUsername) {
         .update({
           username: rollbackUsername,
           display_name: rollbackDisplayName,
+          username_onboarding_completed: currentProfile.username_onboarding_completed,
           updated_at: new Date().toISOString()
         })
         .eq('user_id', userId)

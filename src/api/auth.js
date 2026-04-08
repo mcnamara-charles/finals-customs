@@ -70,6 +70,37 @@ export function normalizeUsernameForSignup(raw) {
  * @param {string} password
  * @param {{ username: string }} profile
  */
+/**
+ * Returns whether the normalized username is unused (RPC; server-truth on signup may still differ).
+ * @param {string} rawUsername
+ * @param {{ excludeUserId?: string | null }} [options] When set, that profile row is ignored (onboarding / rename self).
+ * @returns {Promise<boolean>}
+ */
+export async function checkUsernameAvailability(rawUsername, options = {}) {
+  if (!supabase) throw new Error('Supabase is not configured')
+  const excludeUserId = options.excludeUserId ?? null
+  const params = {
+    p_username: rawUsername,
+    p_exclude_user_id: excludeUserId
+  }
+  const checkPromise = supabase.rpc('is_signup_username_available', params)
+  const timeoutPromise = new Promise((_, reject) => {
+    window.setTimeout(() => {
+      reject(new Error('Username availability check timed out'))
+    }, 7000)
+  })
+  const { data, error } = /** @type {{ data: unknown, error: Error | null }} */ (
+    await Promise.race([checkPromise, timeoutPromise])
+  )
+  if (error) throw error
+  return Boolean(data)
+}
+
+/** @param {string} rawUsername */
+export async function checkSignupUsernameAvailable(rawUsername) {
+  return checkUsernameAvailability(rawUsername, {})
+}
+
 export async function signUpWithEmail(email, password, profile) {
   if (!supabase) throw new Error('Supabase is not configured')
   const username = normalizeUsernameForSignup(profile.username)

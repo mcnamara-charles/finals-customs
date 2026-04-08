@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import App from './App.jsx'
 import { AuthProvider } from './auth/AuthProvider'
 import { ProtectedRoute } from './auth/ProtectedRoute'
+import { UsernameOnboardingGate } from './auth/UsernameOnboardingGate'
 import { LoginPage } from './pages/LoginPage'
 import { SignupPage } from './pages/SignupPage'
 import { CheckEmailPage } from './pages/CheckEmailPage'
@@ -28,7 +29,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
             path="/*"
             element={
               <ProtectedRoute>
-                <App />
+                <UsernameOnboardingGate>
+                  <App />
+                </UsernameOnboardingGate>
               </ProtectedRoute>
             }
           />
