@@ -13,6 +13,10 @@ export {
   deleteGroup,
   setGroupName,
   setGroupGradientColors,
+  setGroupBannerDisplay,
+  uploadGroupBannerImage,
+  normalizeGroupBannerMode,
+  isPlausibleGroupBannerImageUrl,
   GROUP_MANUAL_STATUSES,
   normalizeGroupManualStatus
 } from '../api/groups.js'

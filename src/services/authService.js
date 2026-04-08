@@ -1,4 +1,6 @@
 import {
+  checkSignupUsernameAvailable,
+  checkUsernameAvailability,
   completeAuthRedirect,
   getSession,
   normalizeUsernameForSignup,
@@ -65,6 +67,8 @@ export function getEmailForAuthHandoff() {
 }
 
 export {
+  checkSignupUsernameAvailable,
+  checkUsernameAvailability,
   completeAuthRedirect,
   getSession,
   normalizeUsernameForSignup,
