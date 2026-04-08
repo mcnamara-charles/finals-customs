@@ -20,7 +20,6 @@ const GROUP_BANNER_MIME_TO_EXT = {
  */
 async function optimizeGroupBannerFile(file) {
   if (typeof window === 'undefined') return file
-  const mime = String(file.type || '').toLowerCase()
   const sourceUrl = URL.createObjectURL(file)
   try {
     const image = await new Promise((resolve, reject) => {
@@ -51,7 +50,6 @@ async function optimizeGroupBannerFile(file) {
     const qualitySteps = [0.9, 0.82, 0.74, 0.66, 0.58, 0.5, 0.42]
     let bestBlob = null
     for (const q of qualitySteps) {
-      // eslint-disable-next-line no-await-in-loop
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, outputMime, q))
       if (!blob) continue
       bestBlob = blob
