@@ -3767,7 +3767,7 @@ h1 {
 .group-settings-coming-soon h3 {
   margin: 0;
   color: var(--app-page-text);
-  font-size: 1.35rem;
+  font-size: 1rem;
 }
 
 .group-settings-loadouts-tab .group-loadout-scope-select,
@@ -3949,7 +3949,7 @@ h1 {
 
 .settings-overrides-topbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
   align-items: center;
   gap: 0.6rem;
   width: 100%;
@@ -4066,6 +4066,103 @@ h1 {
 .settings-override-randomize-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.settings-override-random-test-btn {
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--app-utility-btn-border);
+  background-color: var(--app-utility-btn-bg);
+  color: var(--app-utility-btn-text);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.settings-override-random-test-btn:hover:not(:disabled) {
+  border-color: var(--app-utility-btn-hover-border);
+  background-color: var(--app-utility-btn-hover-bg);
+}
+
+.settings-override-random-test-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.settings-random-test-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.32rem;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+.settings-random-test-final {
+  font-size: clamp(1.65rem, 2.8vw, 2.25rem);
+}
+
+.settings-random-test-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.44rem;
+  font-size: clamp(0.78rem, 1.25vw, 1rem);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.settings-random-test-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.settings-random-test-delta.is-positive {
+  color: #50e68b;
+}
+
+.settings-random-test-delta.is-negative {
+  color: #ff5c6c;
+}
+
+.settings-random-test-delta.is-even {
+  color: #c8ced8;
+}
+
+.settings-random-test-delta-icon {
+  display: inline-block;
+  width: 0;
+  height: 0;
+}
+
+.settings-random-test-delta.is-positive .settings-random-test-delta-icon {
+  border-right: 0.28rem solid transparent;
+  border-bottom: 0.48rem solid currentColor;
+  border-left: 0.28rem solid transparent;
+}
+
+.settings-random-test-delta.is-negative .settings-random-test-delta-icon {
+  border-top: 0.48rem solid currentColor;
+  border-right: 0.28rem solid transparent;
+  border-left: 0.28rem solid transparent;
+}
+
+.settings-random-test-delta.is-even .settings-random-test-delta-icon {
+  width: 0.58rem;
+  height: 0.14rem;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .settings-class-section {
@@ -4864,7 +4961,7 @@ h1 {
   }
 
   .settings-overrides-topbar {
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   }
 
   .settings-overrides-label {

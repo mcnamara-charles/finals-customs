@@ -1,6 +1,10 @@
 - Prefer minimal diffs.
-- Preserve existing architecture and patterns unless explicitly told otherwise.
+- Preserve existing architecture and patterns unless explicitly instructed otherwise.
 - Do not edit generated files.
 - Do not broaden scope beyond the requested task.
-- When changing behavior, identify all likely affected files first.
-- When uncertain, ask for or create a plan before implementation.
+- Identify likely affected files before implementation.
+- If the plan is unclear, incomplete, or contradicted by the codebase, stop and surface the issue.
+- Document deviations from plan explicitly.
+- Separate correctness changes from optional cleanup.
+- Favor reversible, low-risk changes.
+- Do not claim success without verification evidence or an explicit report of what could not be verified.

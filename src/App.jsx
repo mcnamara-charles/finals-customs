@@ -100,6 +100,7 @@ const LOADOUT_RANDOMIZATION_SCOPE_TEAM = 'team'
 const LOADOUT_RANDOMIZATION_SCOPE_ALL = 'all'
 const LOADOUT_RANDOMIZATION_SOURCE_ITEMS = 'items'
 const LOADOUT_RANDOMIZATION_SOURCE_PRESETS = 'presets'
+const RANDOM_TEST_ITERATIONS = 1000000
 
 function isValidLoadoutRandomizationScope(value) {
   return (
@@ -781,6 +782,8 @@ function App() {
   const [gadgetEnabled, setGadgetEnabled] = useState({})
   const [settingsTargetPlayer, setSettingsTargetPlayer] = useState(SETTINGS_ALL_PLAYERS)
   const [playerOverrides, setPlayerOverrides] = useState({})
+  const [overrideRandomTestResults, setOverrideRandomTestResults] = useState(null)
+  const [isOverrideRandomTestRunning, setIsOverrideRandomTestRunning] = useState(false)
   const [isTeamsPanelPortrait, setIsTeamsPanelPortrait] = useState(false)
   const [teamsPanelWidth, setTeamsPanelWidth] = useState(0)
   const [teamsPanelHeight, setTeamsPanelHeight] = useState(0)
@@ -2777,6 +2780,22 @@ function App() {
     }
   }, [keepSeparateA, keepSeparateB, participants])
 
+  useEffect(() => {
+    setOverrideRandomTestResults(null)
+  }, [
+    settingsTargetPlayer,
+    selectedGamemode,
+    classInputs,
+    classEnabled,
+    specializationInputs,
+    specializationEnabled,
+    weaponInputs,
+    weaponEnabled,
+    gadgetInputs,
+    gadgetEnabled,
+    playerOverrides
+  ])
+
   useLayoutEffect(() => {
     const panelEl = teamsPanelRef.current
     if (!panelEl) return
@@ -4017,11 +4036,26 @@ function App() {
     removeOverrideForPlayer(settingsTargetPlayer)
   }
 
-  const createUniformWeightMaps = () => {
+  const createDefaultWeightMaps = () => {
     const nextClassInputs = {}
     const nextSpecializationInputs = {}
     const nextWeaponInputs = {}
     const nextGadgetInputs = {}
+    const gadgetClassCounts = {}
+
+    for (const classData of Object.values(gameConfig.classes)) {
+      const classGadgetNames = new Set((classData.gadgets || []).map((gadget) => gadget.name))
+      for (const gadgetName of classGadgetNames) {
+        gadgetClassCounts[gadgetName] = (gadgetClassCounts[gadgetName] || 0) + 1
+      }
+    }
+
+    const getDefaultGadgetWeight = (gadgetName) => {
+      const classCount = gadgetClassCounts[gadgetName] || 1
+      if (classCount >= 3) return '2'
+      if (classCount === 2) return '3'
+      return '6'
+    }
 
     for (const [className, classData] of Object.entries(gameConfig.classes)) {
       nextClassInputs[className] = '1'
@@ -4035,7 +4069,7 @@ function App() {
       }
 
       for (const gadget of classData.gadgets || []) {
-        nextGadgetInputs[`${className}-${gadget.name}`] = '1'
+        nextGadgetInputs[`${className}-${gadget.name}`] = getDefaultGadgetWeight(gadget.name)
       }
     }
 
@@ -4047,8 +4081,8 @@ function App() {
     }
   }
 
-  const handleSetAllWeightsToOne = () => {
-    const nextWeightMaps = createUniformWeightMaps()
+  const handleSetDefaultWeights = () => {
+    const nextWeightMaps = createDefaultWeightMaps()
 
     if (settingsTargetPlayer === SETTINGS_ALL_PLAYERS) {
       setClassInputs(nextWeightMaps.classInputs)
@@ -4238,18 +4272,241 @@ function App() {
     return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}%`
   }
 
-  const getSettingsWeightPercent = (inputMapName, enabledMapName, key, categoryKeys) => {
-    const isEnabled = getDisplayEnabledValue(enabledMapName, key)
+  const formatRandomTestCount = (value) => {
+    const roundedValue = Math.round(value || 0)
+    if (roundedValue < 1000) return String(roundedValue)
+    if (roundedValue < 10000) return `${(roundedValue / 1000).toFixed(1)}K`
+    return `${Math.round(roundedValue / 1000)}K`
+  }
+
+  const getSettingsWeightPercent = (
+    inputMapName,
+    enabledMapName,
+    key,
+    categoryKeys,
+    isCategoryKeyAvailable = () => true
+  ) => {
+    const isEnabled = isCategoryKeyAvailable(key) && getDisplayEnabledValue(enabledMapName, key)
     if (!isEnabled) return 0
 
     const itemWeight = getNumericWeight(getDisplayInputValue(inputMapName, key))
     const enabledTotal = categoryKeys.reduce((sum, categoryKey) => {
+      if (!isCategoryKeyAvailable(categoryKey)) return sum
       if (!getDisplayEnabledValue(enabledMapName, categoryKey)) return sum
       return sum + getNumericWeight(getDisplayInputValue(inputMapName, categoryKey))
     }, 0)
 
     if (enabledTotal <= 0) return 0
     return (itemWeight / enabledTotal) * 100
+  }
+
+  const getWeightedInclusionPercent = (
+    inputMapName,
+    enabledMapName,
+    key,
+    categoryKeys,
+    drawCount,
+    isCategoryKeyAvailable = () => true
+  ) => {
+    const entries = categoryKeys
+      .filter((categoryKey) =>
+        isCategoryKeyAvailable(categoryKey) &&
+        getDisplayEnabledValue(enabledMapName, categoryKey)
+      )
+      .map((categoryKey) => ({
+        key: categoryKey,
+        weight: getNumericWeight(getDisplayInputValue(inputMapName, categoryKey))
+      }))
+      .filter((entry) => entry.weight > 0)
+
+    if (!entries.some((entry) => entry.key === key)) return 0
+
+    const cappedDrawCount = Math.min(drawCount, entries.length)
+    const getNotSelectedProbability = (remainingEntries, drawsLeft) => {
+      if (drawsLeft <= 0) return 1
+
+      const totalWeight = remainingEntries.reduce((sum, entry) => sum + entry.weight, 0)
+      if (totalWeight <= 0) return 1
+
+      return remainingEntries.reduce((sum, entry, entryIndex) => {
+        if (entry.key === key) return sum
+
+        const nextEntries = remainingEntries.filter((_, nextIndex) => nextIndex !== entryIndex)
+        return (
+          sum +
+          (entry.weight / totalWeight) *
+            getNotSelectedProbability(nextEntries, drawsLeft - 1)
+        )
+      }, 0)
+    }
+
+    return (1 - getNotSelectedProbability(entries, cappedDrawCount)) * 100
+  }
+
+  const getOverallSettingsWeightPercent = ({
+    inputMapName,
+    enabledMapName,
+    key,
+    categoryKeys,
+    className,
+    drawCount = 1,
+    isCategoryKeyAvailable = () => true
+  }) => {
+    const classPercent = getSettingsWeightPercent(
+      'classInputs',
+      'classEnabled',
+      className,
+      Object.keys(gameConfig.classes)
+    )
+    if (classPercent <= 0) return 0
+
+    const itemPercent =
+      drawCount > 1
+        ? getWeightedInclusionPercent(
+            inputMapName,
+            enabledMapName,
+            key,
+            categoryKeys,
+            drawCount,
+            isCategoryKeyAvailable
+          )
+        : getSettingsWeightPercent(
+            inputMapName,
+            enabledMapName,
+            key,
+            categoryKeys,
+            isCategoryKeyAvailable
+          )
+
+    return (classPercent * itemPercent) / 100
+  }
+
+  const runOverrideRandomTest = () => {
+    const participant =
+      settingsTargetPlayer === SETTINGS_ALL_PLAYERS ? SETTINGS_ALL_PLAYERS : settingsTargetPlayer
+    const classCounts = {}
+    const specializationCounts = {}
+    const weaponCounts = {}
+    const gadgetCounts = {}
+    const classNames = Object.keys(gameConfig.classes)
+
+    for (let i = 0; i < RANDOM_TEST_ITERATIONS; i += 1) {
+      const availableClasses = classNames.filter((className) =>
+        isClassEnabledForRandomizer(participant, className)
+      )
+      const selectedClass = getWeightedRandomItem(
+        availableClasses,
+        (className) => getClassWeight(participant, className)
+      )
+      if (!selectedClass) continue
+
+      classCounts[selectedClass] = (classCounts[selectedClass] || 0) + 1
+
+      const classData = gameConfig.classes[selectedClass]
+      const specializations = (classData.specializations || []).filter((spec) =>
+        isSpecializationEnabledForRandomizer(participant, selectedClass, spec.name)
+      )
+      const selectedSpecialization = getWeightedRandomItem(
+        specializations,
+        (spec) => getSpecializationWeight(participant, selectedClass, spec.name)
+      )
+      if (selectedSpecialization) {
+        const key = `${selectedClass}-${selectedSpecialization.name}`
+        specializationCounts[key] = (specializationCounts[key] || 0) + 1
+      }
+
+      const weapons = (classData.weapons || []).filter((weapon) =>
+        isWeaponEnabledForRandomizer(participant, selectedClass, weapon.name)
+      )
+      const selectedWeapon = getWeightedRandomItem(
+        weapons,
+        (weapon) => getWeaponWeight(participant, selectedClass, weapon.name)
+      )
+      if (selectedWeapon) {
+        const key = `${selectedClass}-${selectedWeapon.name}`
+        weaponCounts[key] = (weaponCounts[key] || 0) + 1
+      }
+
+      const remainingGadgets = (classData.gadgets || []).filter((gadget) =>
+        isGadgetEnabledForRandomizer(participant, selectedClass, gadget.name)
+      )
+      for (let gadgetIndex = 0; gadgetIndex < 3 && remainingGadgets.length > 0; gadgetIndex += 1) {
+        const selectedGadget = getWeightedRandomItem(
+          remainingGadgets,
+          (gadget) => getGadgetWeight(participant, selectedClass, gadget.name)
+        )
+        if (!selectedGadget) break
+
+        const key = `${selectedClass}-${selectedGadget.name}`
+        gadgetCounts[key] = (gadgetCounts[key] || 0) + 1
+        const selectedIdx = remainingGadgets.findIndex(
+          (gadget) => gadget.name === selectedGadget.name
+        )
+        if (selectedIdx >= 0) remainingGadgets.splice(selectedIdx, 1)
+      }
+    }
+
+    return {
+      totalIterations: RANDOM_TEST_ITERATIONS,
+      classCounts,
+      specializationCounts,
+      weaponCounts,
+      gadgetCounts
+    }
+  }
+
+  const handleOverrideRandomTest = async () => {
+    if (isOverrideRandomTestRunning) return
+    setIsOverrideRandomTestRunning(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    try {
+      setOverrideRandomTestResults(runOverrideRandomTest())
+    } finally {
+      setIsOverrideRandomTestRunning(false)
+    }
+  }
+
+  const getOverrideRandomTestCount = (resultType, key) => {
+    if (!overrideRandomTestResults) return null
+
+    const countsByType = {
+      class: overrideRandomTestResults.classCounts,
+      specialization: overrideRandomTestResults.specializationCounts,
+      weapon: overrideRandomTestResults.weaponCounts,
+      gadget: overrideRandomTestResults.gadgetCounts
+    }
+    return countsByType[resultType]?.[key] || 0
+  }
+
+  const getOverrideRandomTestPercent = (resultType, key) => {
+    if (!overrideRandomTestResults) return null
+    const denominator = overrideRandomTestResults.totalIterations
+    if (denominator <= 0) return 0
+
+    return (getOverrideRandomTestCount(resultType, key) / denominator) * 100
+  }
+
+  const renderOverrideRandomTestOverlay = (resultType, key, expectedPercent) => {
+    const percent = getOverrideRandomTestPercent(resultType, key)
+    if (percent == null) return null
+
+    const count = getOverrideRandomTestCount(resultType, key)
+    const delta = percent - (Number.isFinite(expectedPercent) ? expectedPercent : 0)
+    const roundedDelta = Math.round(Math.abs(delta) * 10) / 10
+    const deltaTrend = roundedDelta === 0 ? 'even' : delta > 0 ? 'positive' : 'negative'
+
+    return (
+      <div className="settings-random-test-overlay" aria-hidden="true">
+        <span className="settings-random-test-final">{formatPercent(percent)}</span>
+        <span className="settings-random-test-meta">
+          <span>{formatRandomTestCount(count)}</span>
+          <span className={`settings-random-test-delta is-${deltaTrend}`}>
+            <span className="settings-random-test-delta-icon" />
+            <span>{formatPercent(roundedDelta)}</span>
+          </span>
+        </span>
+      </div>
+    )
   }
 
   // Get available maps for selected gamemode
@@ -5746,10 +6003,10 @@ function App() {
         </select>
         <button
           className="settings-override-set-all-btn"
-          onClick={handleSetAllWeightsToOne}
+          onClick={handleSetDefaultWeights}
           disabled={settingsTargetIsReadOnly}
         >
-          Set All 1
+          Set Default
         </button>
         <button
           className="settings-override-delete-btn"
@@ -5765,6 +6022,18 @@ function App() {
         >
           <DiceIcon />
           Randomize All
+        </button>
+        <button
+          className="settings-override-random-test-btn"
+          onClick={handleOverrideRandomTest}
+          disabled={isOverrideRandomTestRunning}
+          title={
+            overrideRandomTestResults
+              ? `Last run: ${overrideRandomTestResults.totalIterations.toLocaleString()} iterations`
+              : 'Run 1,000,000 local randomizer iterations'
+          }
+        >
+          {isOverrideRandomTestRunning ? 'Running...' : 'Random Test'}
         </button>
       </div>
       <div className="modal-body settings-page-body">
@@ -5800,6 +6069,16 @@ function App() {
                         />
                       ) : (
                         <span className="loadout-item-text">{classItem.name}</span>
+                      )}
+                      {renderOverrideRandomTestOverlay(
+                        'class',
+                        classItem.key,
+                        getSettingsWeightPercent(
+                          'classInputs',
+                          'classEnabled',
+                          classItem.key,
+                          classesList.map((item) => item.key)
+                        )
                       )}
                     </div>
                     <div className={`loadout-item-label ${getLoadoutLabelClass(classItem.name)}`}>
@@ -5874,6 +6153,17 @@ function App() {
                           ) : (
                             <span className="loadout-item-text">{specialization.name}</span>
                           )}
+                          {renderOverrideRandomTestOverlay(
+                            'specialization',
+                            specialization.key,
+                            getOverallSettingsWeightPercent({
+                              inputMapName: 'specializationInputs',
+                              enabledMapName: 'specializationEnabled',
+                              key: specialization.key,
+                              categoryKeys: specializations.map((item) => item.key),
+                              className
+                            })
+                          )}
                         </div>
                         <div className={`loadout-item-label ${getLoadoutLabelClass(specialization.name)}`}>
                           <em>{specialization.name}</em>
@@ -5895,15 +6185,16 @@ function App() {
                         />
                         <span
                           className={`settings-weight-percent ${getDisplayEnabledValue('specializationEnabled', specialization.key) ? '' : 'is-zero'}`}
-                          title="Weight share among enabled items"
+                          title="Overall chance before class selection"
                         >
                           {formatPercent(
-                            getSettingsWeightPercent(
-                              'specializationInputs',
-                              'specializationEnabled',
-                              specialization.key,
-                              specializations.map((item) => item.key)
-                            )
+                            getOverallSettingsWeightPercent({
+                              inputMapName: 'specializationInputs',
+                              enabledMapName: 'specializationEnabled',
+                              key: specialization.key,
+                              categoryKeys: specializations.map((item) => item.key),
+                              className
+                            })
                           )}
                         </span>
                       </div>
@@ -5949,6 +6240,17 @@ function App() {
                           ) : (
                             <span className="loadout-item-text">{weapon.name}</span>
                           )}
+                          {renderOverrideRandomTestOverlay(
+                            'weapon',
+                            weapon.key,
+                            getOverallSettingsWeightPercent({
+                              inputMapName: 'weaponInputs',
+                              enabledMapName: 'weaponEnabled',
+                              key: weapon.key,
+                              categoryKeys: weapons.map((item) => item.key),
+                              className
+                            })
+                          )}
                         </div>
                         <div className={`loadout-item-label ${getLoadoutLabelClass(weapon.name)}`}>
                           <em>{weapon.name}</em>
@@ -5970,15 +6272,16 @@ function App() {
                         />
                         <span
                           className={`settings-weight-percent ${getDisplayEnabledValue('weaponEnabled', weapon.key) ? '' : 'is-zero'}`}
-                          title="Weight share among enabled items"
+                          title="Overall chance before class selection"
                         >
                           {formatPercent(
-                            getSettingsWeightPercent(
-                              'weaponInputs',
-                              'weaponEnabled',
-                              weapon.key,
-                              weapons.map((item) => item.key)
-                            )
+                            getOverallSettingsWeightPercent({
+                              inputMapName: 'weaponInputs',
+                              enabledMapName: 'weaponEnabled',
+                              key: weapon.key,
+                              categoryKeys: weapons.map((item) => item.key),
+                              className
+                            })
                           )}
                         </span>
                       </div>
@@ -6027,6 +6330,22 @@ function App() {
                             ) : (
                               <span className="loadout-item-text">{gadget.name}</span>
                             )}
+                            {renderOverrideRandomTestOverlay(
+                              'gadget',
+                              gadget.key,
+                              getOverallSettingsWeightPercent({
+                                inputMapName: 'gadgetInputs',
+                                enabledMapName: 'gadgetEnabled',
+                                key: gadget.key,
+                                categoryKeys: gadgets.map((item) => item.key),
+                                className,
+                                drawCount: 3,
+                                isCategoryKeyAvailable: (categoryKey) => {
+                                  const gadgetName = categoryKey.slice(`${className}-`.length)
+                                  return !isGadgetForcedDisabledForMode(className, gadgetName)
+                                }
+                              })
+                            )}
                           </div>
                           <div className={`loadout-item-label ${getLoadoutLabelClass(gadget.name)}`}>
                             <em>{gadget.name}</em>
@@ -6048,15 +6367,21 @@ function App() {
                           />
                           <span
                             className={`settings-weight-percent ${isGadgetEnabled && !isModeForcedDisabled ? '' : 'is-zero'}`}
-                            title="Weight share among enabled items"
+                            title="Overall chance before class selection"
                           >
                             {formatPercent(
-                              getSettingsWeightPercent(
-                                'gadgetInputs',
-                                'gadgetEnabled',
-                                gadget.key,
-                                gadgets.map((item) => item.key)
-                              )
+                              getOverallSettingsWeightPercent({
+                                inputMapName: 'gadgetInputs',
+                                enabledMapName: 'gadgetEnabled',
+                                key: gadget.key,
+                                categoryKeys: gadgets.map((item) => item.key),
+                                className,
+                                drawCount: 3,
+                                isCategoryKeyAvailable: (categoryKey) => {
+                                  const gadgetName = categoryKey.slice(`${className}-`.length)
+                                  return !isGadgetForcedDisabledForMode(className, gadgetName)
+                                }
+                              })
                             )}
                           </span>
                         </div>
